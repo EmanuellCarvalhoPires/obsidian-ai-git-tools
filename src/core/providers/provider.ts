@@ -222,6 +222,11 @@ export interface CriarReleaseParams {
   ativos: ReleaseAtivo[];
 }
 
+export interface AnexarReleaseParams {
+  tag: string;
+  ativos: ReleaseAtivo[];
+}
+
 /** A release as the provider tells it. */
 export interface ReleaseInfo {
   id: string;
@@ -276,6 +281,8 @@ export interface GitProvider {
   statusPipelines(p: StatusPipelinesParams): Promise<Lista<PipelineInfo>>;
   /** Only GitHub has releases; Bitbucket leaves it out and the tool explains that. */
   criarRelease?(p: CriarReleaseParams): Promise<ReleaseInfo>;
+  /** Attaches files to a release that already exists. */
+  anexarRelease?(p: AnexarReleaseParams): Promise<ReleaseInfo>;
 }
 
 /** What a provider implementation needs. `secretName` is empty when no secret was chosen (D6). */

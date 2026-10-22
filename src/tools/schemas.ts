@@ -329,6 +329,19 @@ export const GIT_RELEASE_CRIAR_SCHEMA = objectSchema(
   ["repo", "tag"],
 );
 
+export const GIT_RELEASE_ANEXAR_SCHEMA = objectSchema(
+  {
+    repo: REPO_PROP,
+    tag: str("Tag da release que já existe no GitHub (ex.: 1.1.0)."),
+    arquivos: {
+      type: "array",
+      items: { type: "string" },
+      description: "Arquivos de texto do repositório a anexar, com caminho relativo à raiz (ex.: main.js, manifest.json, styles.css). O token precisa permitir o host uploads.github.com.",
+    },
+  },
+  ["repo", "tag", "arquivos"],
+);
+
 // ---------------------------------------------------------------------------
 // Documentation tools (history of the projects)
 // ---------------------------------------------------------------------------

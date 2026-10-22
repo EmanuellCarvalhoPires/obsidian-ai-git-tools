@@ -47,6 +47,7 @@ import {
   GIT_PR_LISTAR_SCHEMA,
   GIT_PR_MERGE_SCHEMA,
   GIT_PR_OBTER_SCHEMA,
+  GIT_RELEASE_ANEXAR_SCHEMA,
   GIT_RELEASE_CRIAR_SCHEMA,
   GIT_REPO_CRIAR_SCHEMA,
 } from "./schemas";
@@ -652,5 +653,33 @@ export function buildProviderTools(deps: GitToolDeps): HubTool[] {
         });
       },
     }),
-  ];
+    defineRepoTool(deps, {
+      name: "git_release_anexar",
+      title: "Anexar arquivos a uma release",
+      description:
+        "Anexa arquivos de texto a uma release que já existe no GitHub (a tag precisa ter release), para quando a release foi criada sem arquivos. Os arquivos são lidos do clone local (ex.: main.js, manifest.json, styles.css, depois do build). Não cria release nem tag. Recusa um arquivo que não existe ou não é de texto. Publica algo visível ao público: confirme com o usuário a versão antes de chamar. Só GitHub. Precisa de uma secret do GitHub com permissão de escrita em conteúdo e o host uploads.github.com permitido." +
+        FORA_DA_LISTA_TEXTO,
+      inputSchema: GIT_RELEASE_ANEXAR_SCHEMA,
+      annotations: WRITE_PROVIDER,
+      async run(ctx, args) {
+        const tag = reqString(args, "tag").trim();
+        await assertRefName(tag, { git: ctx.git, cwd: ctx.repo.root });
+        const ativos = await readAtivos(ctx.repo.root, optStringList(args, "arquivos") ?? []);
+        if (ativos.length === 0) throw new GuardError('"arquivos" tem de ter pelo menos um arquivo.');
+        return withProvider(ctx, async (use) => {
+          if (!use.provider.anexarRelease) {
+            return fail("argumento_invalido", "Só o GitHub tem releases pela API. No Bitbucket a versão é a tag.", "Use a tag e os arquivos pela página do Bitbucket ou pelo fluxo da branch.");
+          }
+          const rel = await use.provider.anexarRelease({ tag, ativos });
+          return ok(`${rel.ativos.length} arquivo(s) anexado(s) à release ${rel.tag}: ${rel.ativos.join(", ")}${rel.url !== "" ? `\n${rel.url}` : ""}`, {
+            repo: ctx.repo.root,
+            provedor: use.ref.provider,
+            id: rel.id,
+            tag: rel.tag,
+            url: rel.url,
+            arquivos: rel.ativos,
+          });
+        });
+      },
+    }),  ];
 }

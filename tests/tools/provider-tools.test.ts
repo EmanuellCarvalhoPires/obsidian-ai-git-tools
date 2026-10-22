@@ -147,10 +147,10 @@ function fakeClock(): { options: BitbucketOptions; time: () => number } {
   };
 }
 
-describe("the 25 tools", () => {
+describe("the 26 tools", () => {
   it("adds the six provider tools with the annotations of the contract", () => {
     const { tools } = makeEnv({ remote: BB_REMOTE });
-    expect(tools).toHaveLength(25);
+    expect(tools).toHaveLength(26);
     const byName = (n: string) => tools.find((t) => t.name === n)!;
     for (const n of ["git_pr_listar", "git_pr_obter", "git_pipeline_status"]) {
       expect(byName(n).annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false, openWorldHint: true });

@@ -9,6 +9,7 @@ import type {
   ComentarioInfo,
   CommitInfo,
   CriarPrParams,
+  AnexarReleaseParams,
   CriarReleaseParams,
   CriarRepoParams,
   GitProvider,
@@ -26,6 +27,7 @@ import type {
   PrInfo,
   ProviderContext,
   ProviderFactory,
+  ReleaseAtivo,
   ReleaseInfo,
   RepoCriado,
   StatusPipelinesParams,
@@ -309,6 +311,43 @@ export const createGithubProvider: ProviderFactory = (ctx: ProviderContext): Git
     return { itens, truncado: page.truncado };
   }
 
+  /** Attaches files to a release that already exists (looked up by its tag). */
+  async function anexarRelease(p: AnexarReleaseParams): Promise<ReleaseInfo> {
+    const found = obj(await getJson(`${repoBase}/releases/tags/${encodeURIComponent(p.tag)}`));
+    const id = idText(found.id);
+    if (id === "") throw new RemoteError("provedor_http_404", `Não há release com a tag ${p.tag} no GitHub.`, { status: 404 });
+    const anexados = await enviarAtivos(id, p.tag, p.ativos);
+    return {
+      id,
+      tag: str(found.tag_name) ?? p.tag,
+      titulo: str(found.name) ?? p.tag,
+      url: str(found.html_url) ?? "",
+      rascunho: found.draft === true,
+      prerelease: found.prerelease === true,
+      ativos: anexados,
+    };
+  }
+
+  /** Uploads each file to a release, through the uploads host. Stops at the first failure and says what was attached. */
+  async function enviarAtivos(id: string, tag: string, ativos: ReleaseAtivo[]): Promise<string[]> {
+    const anexados: string[] = [];
+    for (const ativo of ativos) {
+      const upload = withQuery(`${GITHUB_UPLOADS}/repos/${encodeURIComponent(ref.owner)}/${encodeURIComponent(ref.slug)}/releases/${encodeURIComponent(id)}/assets`, { name: ativo.nome });
+      try {
+        assertOk("github", await http({ method: "POST", url: upload, headers: { ...headers(), "Content-Type": ativo.contentType }, body: ativo.conteudo, rawBody: true }), redact);
+      } catch (err) {
+        if (!(err instanceof RemoteError)) throw err;
+        const feitos = anexados.length === 0 ? "nenhum arquivo foi anexado" : `anexados: ${anexados.join(", ")}`;
+        throw new RemoteError(err.codigo, `Falha ao enviar ${ativo.nome} para a release ${tag} (${feitos}). ${err.mensagem}`, {
+          ...(err.status !== undefined ? { status: err.status } : {}),
+          ...(err.dica !== undefined ? { dica: err.dica } : {}),
+        });
+      }
+      anexados.push(ativo.nome);
+    }
+    return anexados;
+  }
+
   async function criarRelease(p: CriarReleaseParams): Promise<ReleaseInfo> {
     const comNotas = p.notas !== undefined && p.notas !== "";
     const body: Record<string, unknown> = {
@@ -323,20 +362,15 @@ export const createGithubProvider: ProviderFactory = (ctx: ProviderContext): Git
     const created = obj(parseJson(assertOk("github", await http({ method: "POST", url: `${repoBase}/releases`, headers: headers(), body }), redact)));
     const id = idText(created.id);
     const url = str(created.html_url) ?? "";
-    const anexados: string[] = [];
-    for (const ativo of p.ativos) {
-      const upload = withQuery(`${GITHUB_UPLOADS}/repos/${encodeURIComponent(ref.owner)}/${encodeURIComponent(ref.slug)}/releases/${encodeURIComponent(id)}/assets`, { name: ativo.nome });
-      try {
-        assertOk("github", await http({ method: "POST", url: upload, headers: { ...headers(), "Content-Type": ativo.contentType }, body: ativo.conteudo }), redact);
-      } catch (err) {
-        if (!(err instanceof RemoteError)) throw err;
-        const feitos = anexados.length === 0 ? "nenhum arquivo foi anexado" : `anexados: ${anexados.join(", ")}`;
-        throw new RemoteError(err.codigo, `A release ${p.tag} foi criada (${url}), mas o envio de ${ativo.nome} falhou (${feitos}). ${err.mensagem}`, {
-          ...(err.status !== undefined ? { status: err.status } : {}),
-          ...(err.dica !== undefined ? { dica: err.dica } : {}),
-        });
-      }
-      anexados.push(ativo.nome);
+    let anexados: string[];
+    try {
+      anexados = await enviarAtivos(id, p.tag, p.ativos);
+    } catch (err) {
+      if (!(err instanceof RemoteError)) throw err;
+      throw new RemoteError(err.codigo, `A release ${p.tag} foi criada (${url}), mas ${err.mensagem.charAt(0).toLowerCase()}${err.mensagem.slice(1)}`, {
+        ...(err.status !== undefined ? { status: err.status } : {}),
+        ...(err.dica !== undefined ? { dica: err.dica } : {}),
+      });
     }
     return {
       id,
@@ -349,7 +383,7 @@ export const createGithubProvider: ProviderFactory = (ctx: ProviderContext): Git
     };
   }
 
-  return { id: "github", criarPr, listarPrs, obterPr, comentarPr, listarComentarios, mesclarPr, statusPipelines, criarRelease };
+  return { id: "github", criarPr, listarPrs, obterPr, comentarPr, listarComentarios, mesclarPr, statusPipelines, criarRelease, anexarRelease };
 };
 
 const REPO_NAME = /^[A-Za-z0-9._-]{1,100}$/;

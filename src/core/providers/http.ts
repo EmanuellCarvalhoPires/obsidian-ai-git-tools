@@ -80,13 +80,14 @@ export function createSecureHttp(getSecrets: SecretsGetter, options: SecureHttpO
     if (typeof req.body === "object" && req.body !== null && !hasHeader(headers, "content-type")) {
       headers["Content-Type"] = "application/json";
     }
-    const secretReq: { method: HttpRequest["method"]; url: string; headers: Record<string, string>; body?: string | Record<string, unknown>; timeoutMs: number } = {
+    const secretReq: { method: HttpRequest["method"]; url: string; headers: Record<string, string>; body?: string | Record<string, unknown>; timeoutMs: number; rawBody?: boolean } = {
       method: req.method,
       url: req.url,
       headers,
       timeoutMs,
     };
     if (req.body !== undefined) secretReq.body = req.body;
+    if (req.rawBody === true) secretReq.rawBody = true;
     try {
       const res = await service.request(secretReq, moduleId);
       return { status: res.status, headers: lowerKeys(res.headers), body: typeof res.body === "string" ? res.body : "" };

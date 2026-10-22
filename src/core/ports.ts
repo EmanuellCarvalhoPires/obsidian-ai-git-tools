@@ -62,6 +62,8 @@ export interface HttpRequest {
   headers: Record<string, string>;
   /** A string is sent as is; an object is sent as JSON. */
   body?: string | Record<string, unknown>;
+  /** Sends a string body exactly as given, with no placeholder resolution (raw content such as release files). */
+  rawBody?: boolean;
 }
 
 export interface HttpResponse {

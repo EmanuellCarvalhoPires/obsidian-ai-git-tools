@@ -168,3 +168,24 @@ describe("criarRepoGithub", () => {
     expect(err.mensagem).toContain("name already exists");
   });
 });
+
+describe("anexarRelease", () => {
+  it("finds the release by tag and attaches the files with rawBody, never a placeholder in the body", async () => {
+    const { fake, http } = setup(
+      on("GET", "/repos/o/r/releases/tags/1.1.0", reply(200, release({ id: 88 }))),
+      on("POST", "/repos/o/r/releases/88/assets", reply(201, { id: 1 })),
+    );
+    const provider = createGithubProvider({ http, ref: REF, secretName: "GH_TESTE" });
+    const res = await provider.anexarRelease!({ tag: "1.1.0", ativos: [{ nome: "main.js", conteudo: "x {{secret:NOME}}", contentType: "application/javascript" }] });
+    expect(res).toMatchObject({ id: "88", tag: "1.1.0", ativos: ["main.js"] });
+    const upload = sent(fake).find((c) => c.url.startsWith(GITHUB_UPLOADS))!;
+    expect(upload.rawBody).toBe(true);
+    expect(upload.body).toBe("x {{secret:NOME}}");
+  });
+
+  it("refuses when there is no release with that tag", async () => {
+    const { http } = setup(on("GET", "/repos/o/r/releases/tags/9.9.9", reply(404, { message: "Not Found" })));
+    const provider = createGithubProvider({ http, ref: REF, secretName: "GH_TESTE" });
+    await expect(provider.anexarRelease!({ tag: "9.9.9", ativos: [] })).rejects.toMatchObject({ codigo: "provedor_http_404" });
+  });
+});

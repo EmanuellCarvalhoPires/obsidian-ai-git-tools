@@ -174,6 +174,8 @@ export interface SecretRequest {
   /** A string is sent as is; an object is sent as JSON with Content-Type application/json. */
   body?: string | Record<string, unknown>;
   timeoutMs?: number;
+  /** Sends a string body exactly as given: placeholders in it are not resolved, and a body with a stored secret value is refused. */
+  rawBody?: boolean;
 }
 
 export interface SecretResponse {

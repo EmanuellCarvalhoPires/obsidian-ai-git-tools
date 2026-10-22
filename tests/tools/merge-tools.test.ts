@@ -54,7 +54,7 @@ const hasHead = (repo: string, name: string): boolean => {
 describe("registro das 17 tools", () => {
   it("as 17 tools, na ordem do contrato, com nomes únicos", () => {
     const all = buildGitTools(makeDeps()).map((t) => t.name);
-    expect(all).toHaveLength(25); // + as 6 tools de provedor e as 2 de repositório e release (tests/tools/provider-tools.test.ts, repo-release-tools.test.ts)
+    expect(all).toHaveLength(26); // + as 6 tools de provedor e as 2 de repositório e release (tests/tools/provider-tools.test.ts, repo-release-tools.test.ts)
     const names = all.slice(0, 17);
     expect(names).toEqual([
       "git_status", "git_diff", "git_log", "git_blame", "git_branches", "git_remote_info",

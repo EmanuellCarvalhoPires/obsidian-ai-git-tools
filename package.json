@@ -1,6 +1,6 @@
 {
   "name": "obsidian-ai-git-tools",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Git and provider tools for AI agents, with automatic project history notes.",
   "main": "main.js",
   "private": true,

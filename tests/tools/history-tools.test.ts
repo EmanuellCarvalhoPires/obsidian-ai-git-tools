@@ -35,14 +35,14 @@ const names = (list: { name: string }[]): string[] => list.map((t) => t.name);
 const eventNotes = (v: MemoryVault): string[] => [...v.notes.keys()].filter((p) => p.includes("/Eventos/") && !p.endsWith("Eventos.md"));
 
 describe("registry", () => {
-  it("has 29 tools with the history deps and 25 without them", () => {
+  it("has 30 tools with the history deps and 26 without them", () => {
     const repo = makeRepo();
     const s = setup([{ name: "App", clone: repo }]);
     const all = buildGitTools(s.deps);
-    expect(all).toHaveLength(29);
+    expect(all).toHaveLength(30);
     expect(names(all).slice(-4)).toEqual(["git_graph", "git_changelog", "git_sync", "git_registrar_evento"]);
-    expect(new Set(names(all)).size).toBe(29);
-    expect(buildGitTools(makeDeps({ projects: [{ name: "App", clone: repo }] }))).toHaveLength(25);
+    expect(new Set(names(all)).size).toBe(30);
+    expect(buildGitTools(makeDeps({ projects: [{ name: "App", clone: repo }] }))).toHaveLength(26);
   });
 
   it("annotates the tools as the contract says", () => {
