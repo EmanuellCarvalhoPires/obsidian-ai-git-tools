@@ -1,0 +1,30 @@
+{
+  "name": "obsidian-ai-git-tools",
+  "version": "0.1.0",
+  "description": "Git and provider tools for AI agents, with automatic project history notes.",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc --noEmit && node esbuild.config.mjs production",
+    "deploy": "npm run build && node scripts/deploy.mjs",
+    "test": "vitest run",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": ["obsidian", "git", "github", "bitbucket", "ai", "claude-code"],
+  "author": "Emanuell Pires",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.20.4",
+    "esbuild": "^0.28.2",
+    "eslint": "^9.39.5",
+    "eslint-plugin-obsidianmd": "^0.4.2",
+    "obsidian": "^1.13.1",
+    "tslib": "^2.8.1",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.70.1",
+    "vitest": "^5.0.1",
+    "yaml": "^2.9.1"
+  }
+}

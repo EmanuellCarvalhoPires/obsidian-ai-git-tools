@@ -1,0 +1,90 @@
+/* Shared styles of AI Git Tools (prefix: aigt-): helpers, graph block, modal and settings. Theme variables only. */
+.aigt-muted {
+  color: var(--text-muted);
+}
+
+.aigt-error {
+  color: var(--text-error);
+}
+
+.aigt-mono {
+  font-family: var(--font-monospace);
+}
+
+/* Messages written by the graph block and by the screen ("no project", "no clone", ...). */
+.aigt-empty,
+.aigt-graph-empty {
+  padding: var(--size-4-2) var(--size-4-3);
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+/* Repository graph: the block of the notes and the card of the screen share it. */
+.aigt-graph-block {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background-color: var(--background-secondary);
+}
+
+.aigt-graph {
+  display: block;
+  min-width: min-content;
+}
+
+.aigt-graph-svg {
+  display: block;
+  max-width: none;
+  height: auto;
+}
+
+/* Dependency modal. */
+.aigt-modal-icon {
+  display: inline-flex;
+  vertical-align: middle;
+  margin-right: var(--size-4-2);
+}
+
+.aigt-modal-icon svg {
+  width: var(--icon-m);
+  height: var(--icon-m);
+}
+
+/* Settings tab. */
+.aigt-settings-note {
+  margin: var(--size-4-2) 0;
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+}
+
+.aigt-settings-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--size-4-1);
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+}
+
+.aigt-settings-status.is-error {
+  color: var(--text-error);
+}
+
+.aigt-settings-status.is-ok {
+  color: var(--text-success);
+}
+
+.aigt-settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--size-4-2);
+}
+
+.aigt-settings-list {
+  width: 100%;
+  min-height: 5em;
+  resize: vertical;
+}

@@ -1,0 +1,10 @@
+{
+  "id": "ai-git-tools",
+  "name": "AI Git Tools",
+  "version": "0.1.0",
+  "minAppVersion": "1.13.0",
+  "description": "Git, GitHub and Bitbucket tools for AI agents, with automatic project history notes.",
+  "author": "Emanuell Pires",
+  "authorUrl": "https://github.com/EmanuellCarvalhoPires",
+  "isDesktopOnly": true
+}
