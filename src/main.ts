@@ -247,6 +247,7 @@ export default class AiGitToolsPlugin extends Plugin implements SettingsHost {
     void this.refreshProjects();
     this.refreshAutomation();
     this.dropSetupHandler();
+    this.syncToolIndex();
     this.unregisterSetupHandler = registerSetupHandler(
       api,
       createSetupHandler({
@@ -266,6 +267,32 @@ export default class AiGitToolsPlugin extends Plugin implements SettingsHost {
         knownProjects: () => this.lastProjects,
       }),
     );
+  }
+
+  /**
+   * Synchronizes the 30 tool definitions with the module's tools.db in AI Ecosystem.
+   */
+  private syncToolIndex(): void {
+    const api = this.connector?.getApi();
+    if (!api?.toolIndex) return;
+    const tools = this.buildTools();
+    const entries = tools.map((t) => ({
+      name: t.name,
+      title: t.title,
+      description: t.description,
+      inputSchema: t.inputSchema,
+      annotations: t.annotations,
+      categoria: t.categoria,
+      tags: t.tags,
+      resumo: t.resumo,
+      efeito: t.efeito,
+      exposicao: t.exposicao,
+      aprovacao: t.aprovacao,
+      exemplo: t.exemplo,
+    }));
+    api.toolIndex.sync(MODULE_ID, entries).catch((err: unknown) => {
+      console.error("[AI Git Tools] Could not sync the tool index", err);
+    });
   }
 
   /**
