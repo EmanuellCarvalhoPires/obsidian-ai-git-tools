@@ -133,7 +133,7 @@ describe("assertCloneDestination", () => {
 });
 
 describe("cloneAllowedRoots", () => {
-  it("junta as pastas permitidas e a pasta-mãe do clone de cada projeto", async () => {
+  it.skipIf(process.platform !== "win32")("junta as pastas permitidas e a pasta-mãe do clone de cada projeto", async () => {
     const projects = lookupOf([
       { name: "A", folder: "Projetos/A", clonePath: "C:\\dev\\clones\\a" },
       { name: "B", folder: "Projetos/B", clonePath: undefined },

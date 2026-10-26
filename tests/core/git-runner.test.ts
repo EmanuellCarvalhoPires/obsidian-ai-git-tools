@@ -86,7 +86,7 @@ describe("createNodeGit", () => {
 
   it("fails with the code timeout when the call takes longer than allowed", async () => {
     const repo = makeRepo();
-    const err = await failure(git(repo, ["log"], { timeoutMs: 1 }));
+    const err = await failure(git(repo, ["-c", "alias.espera=!sleep 5", "espera"], { timeoutMs: 200 }));
     expect(err.codigo).toBe("timeout");
   });
 
