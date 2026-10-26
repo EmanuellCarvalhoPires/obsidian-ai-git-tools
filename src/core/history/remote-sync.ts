@@ -244,7 +244,7 @@ export class RemoteSync {
     try {
       const branch = await defaultBranch(git, clone, remote.name);
       if (branch !== undefined) {
-        const runs = await provider.statusPipelines({ branch, limite: PIPELINE_LIMIT });
+        const runs = await provider.statusPipelines({ branch, limite: PIPELINE_LIMIT, incluirSteps: false });
         read = true;
         for (const run of [...runs.itens].reverse()) {
           if (run.estado !== "sucesso" || run.id === "") continue;

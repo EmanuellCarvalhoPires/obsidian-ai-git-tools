@@ -65,11 +65,13 @@ describe("createVaultProjectLookup", () => {
   const notes: FakeNote[] = [
     { path: "Projetos/Alpha/Alpha.md", tags: ["dev/projeto"], text: "- **Clone local:** `C:\\clones\\alpha`" },
     { path: "Projetos/Beta/Beta.md", tags: ["dev/projeto"], text: "sem clone" },
+    { path: "Projetos/Alpha/Plano-de-Testes.md", tags: ["dev/projeto"], text: "documento secundario sem clone" },
+    { path: "Projetos/Alpha/Legado/Antigo.md", tags: ["dev/projeto"], text: "documento em subpasta utilitaria" },
     { path: "Projetos/Gama/Gama.md", tags: ["outra"], text: "- **Clone local:** `C:\\clones\\gama`" },
     { path: "Outro/Delta.md", tags: ["dev/projeto"], text: "- **Clone local:** `C:\\clones\\delta`" },
   ];
 
-  it("lista só notas com a tag dentro de projectsRoot", async () => {
+  it("lista só notas de projeto raiz com a tag dentro de projectsRoot ignorando documentos secundários", async () => {
     const lookup = createVaultProjectLookup(fakeApp(notes), () => "Projetos");
     const list = await lookup.list();
     expect(list).toEqual([

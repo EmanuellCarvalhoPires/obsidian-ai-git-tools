@@ -200,6 +200,8 @@ export interface StatusPipelinesParams {
   numero_pr?: number;
   /** Maximum of runs (default 5). */
   limite?: number;
+  /** When false, omits fetching individual step/job details to save HTTP requests (defaults to true). */
+  incluirSteps?: boolean;
 }
 
 /** A file attached to a release. Text only: it travels as the request body through the secrets service. */

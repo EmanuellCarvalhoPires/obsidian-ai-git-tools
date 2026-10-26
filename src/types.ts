@@ -35,7 +35,7 @@ export const DEFAULT_SETTINGS: Settings = {
   allowAnyFolder: false,
   watch: true,
   remotePolling: true,
-  remoteIntervalMin: 10,
+  remoteIntervalMin: 30,
   lastProject: "",
 };
 
