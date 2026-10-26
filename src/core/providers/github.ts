@@ -293,10 +293,15 @@ export const createGithubProvider: ProviderFactory = (ctx: ProviderContext): Git
     const url = withQuery(`${repoBase}/actions/runs`, { branch: p.branch, head_sha: headSha, per_page: Math.min(100, limite) });
     const pick = (body: unknown): unknown => obj(body).workflow_runs;
     const page = await paginateGithub<Json>(http, url, { headers: headers(), maxItems: limite, pick, redact });
+    const incluirSteps = p.incluirSteps !== false;
     const itens = await Promise.all(
       page.itens.map(async (run): Promise<PipelineInfo> => {
         const id = idText(run.id);
-        const jobs = list(obj(await getJson(withQuery(`${repoBase}/actions/runs/${encodeURIComponent(id)}/jobs`, { per_page: 100 }))).jobs);
+        let steps: PipelineStep[] = [];
+        if (incluirSteps) {
+          const jobs = list(obj(await getJson(withQuery(`${repoBase}/actions/runs/${encodeURIComponent(id)}/jobs`, { per_page: 100 }))).jobs);
+          steps = jobs.map(toStep);
+        }
         return {
           id,
           estado: mapRunState(run.status, run.conclusion),
@@ -304,7 +309,7 @@ export const createGithubProvider: ProviderFactory = (ctx: ProviderContext): Git
           commit: str(run.head_sha) ?? "",
           url: str(run.html_url) ?? "",
           criadoEm: str(run.created_at) ?? "",
-          steps: jobs.map(toStep),
+          steps,
         };
       }),
     );

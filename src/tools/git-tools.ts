@@ -35,6 +35,7 @@ import { resolveRepo } from "../core/repo-resolver";
 import type { ResolvedRepo } from "../core/repo-resolver";
 import type { HubTool, HubToolResult } from "../ecosystem/types";
 import type { Settings } from "../types";
+import { withToolMetadata } from "./metadata";
 import { buildHistoryTools } from "./history-tools";
 import { buildProviderTools } from "./provider-tools";
 import { fail, fromError, ok } from "./results";
@@ -954,5 +955,5 @@ export const GIT_TOOL_FACTORIES: GitToolFactory[] = [
 ];
 
 export function buildGitTools(deps: GitToolDeps): HubTool[] {
-  return GIT_TOOL_FACTORIES.flatMap((factory) => factory(deps));
+  return GIT_TOOL_FACTORIES.flatMap((factory) => factory(deps)).map(withToolMetadata);
 }

@@ -131,7 +131,7 @@ describe("baseline", () => {
     const e = makeEnv();
     await e.remote.syncProject(e.project);
     expect(e.provider.listarPrs).toHaveBeenCalledWith({ estado: "todos", limite: 20 });
-    expect(e.provider.statusPipelines).toHaveBeenCalledWith({ branch: "main", limite: 10 });
+    expect(e.provider.statusPipelines).toHaveBeenCalledWith({ branch: "main", limite: 10, incluirSteps: false });
   });
 
   it("a baseline that read nothing does not count: the next successful read is the baseline", async () => {
@@ -259,7 +259,7 @@ describe("deploys", () => {
     expect(e.provider.listarPrs).toHaveBeenCalled();
     sh(e.repo, "update-ref", "refs/remotes/origin/master", "HEAD");
     await e.remote.syncProject(e.project);
-    expect(e.provider.statusPipelines).toHaveBeenCalledWith({ branch: "master", limite: 10 });
+    expect(e.provider.statusPipelines).toHaveBeenCalledWith({ branch: "master", limite: 10, incluirSteps: false });
   });
 });
 

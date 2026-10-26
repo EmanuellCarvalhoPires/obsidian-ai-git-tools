@@ -416,16 +416,20 @@ export function createBitbucketProviderWith(ctx: ProviderContext, options: Bitbu
     const filtered = out.itens.filter(keep);
     const chosen = filtered.slice(0, limite);
 
+    const incluirSteps = p.incluirSteps !== false;
     const itens = await Promise.all(
       chosen.map(async (pipeline): Promise<PipelineInfo> => {
         const target = obj(pipeline.target);
         const uuid = str(pipeline.uuid) ?? "";
-        const steps = await paginateBitbucket<Json>(ctx.http, `${base}/pipelines/${encodeURIComponent(uuid)}/steps/`, {
-          headers: headers(),
-          maxPages: 2,
-          ...(ctx.redact ? { redact: ctx.redact } : {}),
-        });
-        const stepInfos: PipelineStep[] = steps.itens.map((s) => ({ nome: str(obj(s).name) ?? "", estado: pipelineEstado(obj(s).state) }));
+        let stepInfos: PipelineStep[] = [];
+        if (incluirSteps) {
+          const steps = await paginateBitbucket<Json>(ctx.http, `${base}/pipelines/${encodeURIComponent(uuid)}/steps/`, {
+            headers: headers(),
+            maxPages: 2,
+            ...(ctx.redact ? { redact: ctx.redact } : {}),
+          });
+          stepInfos = steps.itens.map((s) => ({ nome: str(obj(s).name) ?? "", estado: pipelineEstado(obj(s).state) }));
+        }
         const buildNumber = num(pipeline.build_number);
         return {
           id: uuid,

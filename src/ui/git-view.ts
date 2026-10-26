@@ -14,6 +14,7 @@ import { parseRemoteUrl } from "../core/providers/provider";
 import type { PrInfo, RemoteRef } from "../core/providers/provider";
 import { renderGraphInto } from "./graph-block";
 import { logsDoProjeto } from "./project-logs";
+import { paginate, renderPaginationControls } from "./pagination";
 
 export const GIT_VIEW_TYPE = "ai-git-tools-view";
 
@@ -184,6 +185,8 @@ export class GitToolsView extends ItemView {
   private graphSeq = 0;
   private graphTail: Promise<void> = Promise.resolve();
   private prSeq = 0;
+  private eventsPage = 1;
+  private logsPage = 1;
 
   private projectsEl!: HTMLElement;
   private mainEl!: HTMLElement;
@@ -235,10 +238,19 @@ export class GitToolsView extends ItemView {
 
     this.registerEvent(
       this.app.metadataCache.on("changed", (file) => {
-        // The graph follows the notes of events that arrive while the screen is open.
         const project = this.current();
-        if (project && file.path.startsWith(`${this.plugin.history.eventsFolder(project)}/`)) void this.drawGraph(project);
-        this.requestRefresh();
+        if (project && file.path.startsWith(`${this.plugin.history.eventsFolder(project)}/`)) {
+          void this.drawGraph(project);
+          if (this.tab === "events") this.renderPanel(project);
+          return;
+        }
+        // Only refresh project list if a note inside projectsRoot changed
+        if (file.path.startsWith(this.plugin.settings.projectsRoot)) {
+          this.requestRefresh();
+        } else if (this.tab === "logs") {
+          // If a log changed, refresh only the panel
+          if (project) this.renderPanel(project);
+        }
       }),
     );
     this.registerEvent(this.app.metadataCache.on("resolved", () => this.requestRefresh()));
@@ -265,6 +277,8 @@ export class GitToolsView extends ItemView {
     this.selected = name;
     this.remember(name);
     this.tab = "events";
+    this.eventsPage = 1;
+    this.logsPage = 1;
     this.renderProjects();
     this.renderMain();
   }
@@ -367,6 +381,8 @@ export class GitToolsView extends ItemView {
       button.addEventListener("click", () => {
         if (tab === this.tab) return;
         this.tab = tab;
+        this.eventsPage = 1;
+        this.logsPage = 1;
         this.renderTabs();
         const project = this.current();
         if (project) this.renderPanel(project);
@@ -436,8 +452,9 @@ export class GitToolsView extends ItemView {
       this.emptyState(this.panelEl, "list", tr("events.empty"));
       return;
     }
+    const paginated = paginate(rows, this.eventsPage, 50);
     const list = this.panelEl.createDiv({ cls: "aigt-list" });
-    for (const r of rows) {
+    for (const r of paginated.pageItems) {
       const row = list.createDiv({ cls: "aigt-row" });
       setIcon(row.createSpan({ cls: "aigt-row-icon" }), EVENT_ICON[r.tipo] ?? "circle-dot");
       const body = row.createDiv({ cls: "aigt-row-body" });
@@ -448,6 +465,19 @@ export class GitToolsView extends ItemView {
       meta.createSpan({ text: dateLabel(r.data) });
       activate(row, () => this.openNote(r.path));
     }
+
+    renderPaginationControls(
+      this.panelEl,
+      paginated.hasMore,
+      paginated.shownCount,
+      paginated.total,
+      () => {
+        this.eventsPage++;
+        this.panelEl.empty();
+        this.renderEvents(project);
+      },
+      { showMore: "Carregar mais" },
+    );
   }
 
   // ---------------------------------------------------------------- logs tab
@@ -458,8 +488,9 @@ export class GitToolsView extends ItemView {
       this.emptyState(this.panelEl, "scroll-text", tr("logs.empty"));
       return;
     }
+    const paginated = paginate(logs, this.logsPage, 50);
     const list = this.panelEl.createDiv({ cls: "aigt-list" });
-    for (const log of logs) {
+    for (const log of paginated.pageItems) {
       const row = list.createDiv({ cls: "aigt-row" });
       setIcon(row.createSpan({ cls: "aigt-row-icon" }), "scroll-text");
       const body = row.createDiv({ cls: "aigt-row-body" });
@@ -469,6 +500,19 @@ export class GitToolsView extends ItemView {
       meta.createSpan({ text: log.status === "ativo" ? tr("logs.active") : log.status === "arquivado" ? tr("logs.archived") : log.status });
       activate(row, () => this.openNote(log.path));
     }
+
+    renderPaginationControls(
+      this.panelEl,
+      paginated.hasMore,
+      paginated.shownCount,
+      paginated.total,
+      () => {
+        this.logsPage++;
+        this.panelEl.empty();
+        this.renderLogs(project);
+      },
+      { showMore: "Carregar mais" },
+    );
   }
 
   // ---------------------------------------------------------------- PRs tab
