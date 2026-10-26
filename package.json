@@ -1,6 +1,6 @@
 {
   "name": "obsidian-ai-git-tools",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Git and provider tools for AI agents, with automatic project history notes.",
   "main": "main.js",
   "private": true,
@@ -12,7 +12,14 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit"
   },
-  "keywords": ["obsidian", "git", "github", "bitbucket", "ai", "claude-code"],
+  "keywords": [
+    "obsidian",
+    "git",
+    "github",
+    "bitbucket",
+    "ai",
+    "claude-code"
+  ],
   "author": "Emanuell Pires",
   "license": "MIT",
   "devDependencies": {

@@ -157,9 +157,9 @@ describe("settings tab: automation", () => {
     const { host, tab } = setup();
     tab.display();
     const field = byName(tab, "Minutes between remote reads").components[0];
-    expect(field.value).toBe("10");
+    expect(field.value).toBe("30");
     for (const bad of ["0", "121", "abc", "1.5", "", "-3"]) field.changeFn(bad);
-    expect(host.settings.remoteIntervalMin).toBe(10);
+    expect(host.settings.remoteIntervalMin).toBe(30);
     field.changeFn("1");
     expect(host.settings.remoteIntervalMin).toBe(1);
     field.changeFn("120");

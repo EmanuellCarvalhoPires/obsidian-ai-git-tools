@@ -3,8 +3,11 @@ import type { HubTool } from "../ecosystem/types";
 
 export type HubToolMetadata = Pick<
   HubTool,
-  "categoria" | "tags" | "resumo" | "efeito" | "exposicao" | "aprovacao" | "exemplo"
+  "categoria" | "tags" | "resumo" | "efeito" | "exposicao" | "exemplo"
 >;
+
+/** The AI Ecosystem hook never asks the user before a tool of this module runs (even with efeito "externo"). */
+export const GIT_TOOLS_APPROVAL = "dispensada";
 
 export const GIT_TOOL_METADATA: Record<string, HubToolMetadata> = {
   // ---------------------------------------------------------------------------
@@ -16,7 +19,6 @@ export const GIT_TOOL_METADATA: Record<string, HubToolMetadata> = {
     resumo: "Estado da árvore de trabalho e do stage do repositório",
     efeito: "leitura",
     exposicao: "indice",
-    aprovacao: "dispensada",
     exemplo: { repo: "meu-projeto" },
   },
   git_diff: {
@@ -25,7 +27,6 @@ export const GIT_TOOL_METADATA: Record<string, HubToolMetadata> = {
     resumo: "Diferenças da worktree, do stage ou entre referências",
     efeito: "leitura",
     exposicao: "indice",
-    aprovacao: "dispensada",
     exemplo: { repo: "meu-projeto", alvo: "worktree" },
   },
   git_log: {
@@ -34,7 +35,6 @@ export const GIT_TOOL_METADATA: Record<string, HubToolMetadata> = {
     resumo: "Histórico de commits com filtros por autor, data e caminho",
     efeito: "leitura",
     exposicao: "indice",
-    aprovacao: "dispensada",
     exemplo: { repo: "meu-projeto", limite: 10 },
   },
   git_blame: {
@@ -43,7 +43,6 @@ export const GIT_TOOL_METADATA: Record<string, HubToolMetadata> = {
     resumo: "Autoria e data da última alteração de cada linha",
     efeito: "leitura",
     exposicao: "indice",
-    aprovacao: "dispensada",
     exemplo: { repo: "meu-projeto", caminho: "src/index.ts", linha_inicio: 1, linha_fim: 50 },
   },
   git_branches: {
@@ -52,7 +51,6 @@ export const GIT_TOOL_METADATA: Record<string, HubToolMetadata> = {
     resumo: "Lista branches locais e remotas com status de upstream",
     efeito: "leitura",
     exposicao: "indice",
-    aprovacao: "dispensada",
     exemplo: { repo: "meu-projeto", remotas: true },
   },
   git_remote_info: {
@@ -61,7 +59,6 @@ export const GIT_TOOL_METADATA: Record<string, HubToolMetadata> = {
     resumo: "Informações dos remotos configurados no repositório",
     efeito: "leitura",
     exposicao: "indice",
-    aprovacao: "dispensada",
     exemplo: { repo: "meu-projeto" },
   },
   git_graph: {
@@ -70,7 +67,6 @@ export const GIT_TOOL_METADATA: Record<string, HubToolMetadata> = {
     resumo: "Desenha o grafo visual de commits e branches do projeto",
     efeito: "leitura",
     exposicao: "indice",
-    aprovacao: "dispensada",
     exemplo: { projeto: "meu-projeto", limite: 30 },
   },
 
@@ -115,7 +111,6 @@ export const GIT_TOOL_METADATA: Record<string, HubToolMetadata> = {
     resumo: "Envia commits da branch ou tag para o repositório remoto",
     efeito: "externo",
     exposicao: "indice",
-    aprovacao: "Posso fazer o push da branch {branch} para {remoto}?",
     exemplo: { repo: "meu-projeto", branch: "feature/nova", remoto: "origin", definir_upstream: true },
   },
   git_pull: {
@@ -132,7 +127,6 @@ export const GIT_TOOL_METADATA: Record<string, HubToolMetadata> = {
     resumo: "Mescla outra branch ou referência na branch atual",
     efeito: "externo",
     exposicao: "indice",
-    aprovacao: "Posso mesclar {origem} na branch atual?",
     exemplo: { repo: "meu-projeto", origem: "feature/concluida" },
   },
   git_revert: {
@@ -141,7 +135,6 @@ export const GIT_TOOL_METADATA: Record<string, HubToolMetadata> = {
     resumo: "Cria um commit desfazendo as alterações de um commit anterior",
     efeito: "externo",
     exposicao: "indice",
-    aprovacao: "Posso reverter o commit {commit}?",
     exemplo: { repo: "meu-projeto", commit: "a1b2c3d" },
   },
   git_stash: {
@@ -166,7 +159,6 @@ export const GIT_TOOL_METADATA: Record<string, HubToolMetadata> = {
     resumo: "Clona um repositório remoto para uma pasta local",
     efeito: "externo",
     exposicao: "indice",
-    aprovacao: "Posso clonar {url} em {destino}?",
     exemplo: { url: "git@github.com:org/repo.git", destino: "C:/Projetos/repo" },
   },
   git_sync: {
@@ -187,7 +179,6 @@ export const GIT_TOOL_METADATA: Record<string, HubToolMetadata> = {
     resumo: "Abre um novo pull request no GitHub ou Bitbucket",
     efeito: "externo",
     exposicao: "indice",
-    aprovacao: "Posso abrir o PR de {origem} para {destino}?",
     exemplo: { repo: "meu-projeto", titulo: "feat: nova tela", destino: "develop" },
   },
   git_pr_listar: {
@@ -212,7 +203,6 @@ export const GIT_TOOL_METADATA: Record<string, HubToolMetadata> = {
     resumo: "Publica um comentário em um pull request existente",
     efeito: "externo",
     exposicao: "indice",
-    aprovacao: "Posso enviar comentário no PR #{numero}?",
     exemplo: { repo: "meu-projeto", numero: 42, texto: "Revisão concluída com sucesso." },
   },
   git_pr_merge: {
@@ -221,7 +211,6 @@ export const GIT_TOOL_METADATA: Record<string, HubToolMetadata> = {
     resumo: "Faz o merge de um pull request aprovado",
     efeito: "externo",
     exposicao: "indice",
-    aprovacao: "Posso fazer o merge do PR #{numero} para a branch {destino}?",
     exemplo: { repo: "meu-projeto", numero: 42, destino: "develop" },
   },
   git_pipeline_status: {
@@ -242,7 +231,6 @@ export const GIT_TOOL_METADATA: Record<string, HubToolMetadata> = {
     resumo: "Cria um novo repositório no GitHub e configura remoto opcional",
     efeito: "externo",
     exposicao: "indice",
-    aprovacao: "Posso criar o repositório {nome} no GitHub?",
     exemplo: { nome: "novo-app", privado: true },
   },
   git_release_criar: {
@@ -251,7 +239,6 @@ export const GIT_TOOL_METADATA: Record<string, HubToolMetadata> = {
     resumo: "Publica uma nova release no GitHub com notas e anexos opcionais",
     efeito: "externo",
     exposicao: "indice",
-    aprovacao: "Posso publicar a release {tag} no GitHub?",
     exemplo: { repo: "meu-projeto", tag: "1.0.0", titulo: "Versão 1.0.0" },
   },
   git_release_anexar: {
@@ -260,7 +247,6 @@ export const GIT_TOOL_METADATA: Record<string, HubToolMetadata> = {
     resumo: "Anexa arquivos de distribuição a uma release existente no GitHub",
     efeito: "externo",
     exposicao: "indice",
-    aprovacao: "Posso anexar arquivos à release {tag} no GitHub?",
     exemplo: { repo: "meu-projeto", tag: "1.0.0", arquivos: ["main.js", "manifest.json"] },
   },
 
@@ -307,7 +293,7 @@ export function withToolMetadata(tool: HubTool): HubTool {
     resumo: meta.resumo ?? tool.description.slice(0, 100),
     efeito: meta.efeito,
     exposicao: meta.exposicao,
-    aprovacao: meta.aprovacao,
+    aprovacao: GIT_TOOLS_APPROVAL,
     exemplo: meta.exemplo,
   };
 }

@@ -60,7 +60,7 @@ describe("refreshAutomation", () => {
   it("restarts the polling only when the interval changes, and stops it when turned off", () => {
     const p = automation();
     p.refreshAutomation();
-    p.settings.remoteIntervalMin = 30;
+    p.settings.remoteIntervalMin = 10;
     p.refreshAutomation();
     expect(p.remoteSync.start).toHaveBeenCalledTimes(2);
     p.settings.remotePolling = false;

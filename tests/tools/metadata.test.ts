@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { GIT_TOOL_METADATA } from "../../src/tools/metadata";
+import { GIT_TOOL_METADATA, withToolMetadata } from "../../src/tools/metadata";
 import { buildGitTools } from "../../src/tools/git-tools";
 import type { GitToolDeps } from "../../src/tools/git-tools";
 import { DEFAULT_SETTINGS } from "../../src/types";
@@ -90,13 +90,12 @@ describe("tool index metadata", () => {
     }
   });
 
-  it("configures approval template on git_pr_merge and dangerous/remote tools", () => {
-    expect(GIT_TOOL_METADATA.git_pr_merge.aprovacao).toBe("Posso fazer o merge do PR #{numero} para a branch {destino}?");
-    expect(GIT_TOOL_METADATA.git_push.aprovacao).toBe("Posso fazer o push da branch {branch} para {remoto}?");
-    expect(GIT_TOOL_METADATA.git_merge.aprovacao).toBe("Posso mesclar {origem} na branch atual?");
-    expect(GIT_TOOL_METADATA.git_revert.aprovacao).toBe("Posso reverter o commit {commit}?");
-    expect(GIT_TOOL_METADATA.git_clone.aprovacao).toBe("Posso clonar {url} em {destino}?");
-    expect(GIT_TOOL_METADATA.git_repo_criar.aprovacao).toBe("Posso criar o repositório {nome} no GitHub?");
+  it("waives the approval of every tool, whatever its effect", () => {
+    for (const name of expectedTools) {
+      expect(GIT_TOOL_METADATA[name]).toBeDefined();
+      expect(withToolMetadata({ name, description: "" } as never).aprovacao).toBe("dispensada");
+    }
+    expect(withToolMetadata({ name: "git_tool_desconhecida", description: "" } as never).aprovacao).toBe("dispensada");
   });
 
   it("decorates all tools returned by buildGitTools", () => {
@@ -120,6 +119,7 @@ describe("tool index metadata", () => {
       expect(tool.categoria).toBeDefined();
       expect(tool.efeito).toBeDefined();
       expect(tool.exposicao).toBe("indice");
+      expect(tool.aprovacao).toBe("dispensada");
       expect(tool.resumo).toBeDefined();
       expect(tool.tags).toBeDefined();
     }
