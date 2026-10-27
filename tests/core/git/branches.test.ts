@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { createNodeGit } from "../../../src/core/git-runner";
 import { GuardError } from "../../../src/core/guards";
@@ -91,5 +92,40 @@ describe("gitBranches (repositório real)", () => {
   it("recusa mescladas_em inválido sem chamar o git", async () => {
     const never = () => Promise.reject(new Error("o git não devia ser chamado"));
     await expect(gitBranches(never, "/x", { mescladasEm: "--all" })).rejects.toThrow(GuardError);
+  });
+
+  it("marca sumiu_do_remoto e upstream_sumiu quando branch foi apagada no remoto", async () => {
+    const { repo, remote } = makeRepoWithRemote();
+    sh(repo, "branch", "x");
+    sh(repo, "push", "-q", "-u", "origin", "x");
+
+    const tmp = makeTempDir();
+    sh(tmp, "clone", "-q", remote, "outro");
+    const outro = join(tmp, "outro");
+    sh(outro, "push", "-q", "origin", "--delete", "x");
+
+    // sem remotas: true -> nenhuma marcação
+    const semRemotas = await gitBranches(git, repo, {});
+    expect(semRemotas.locais.find((b) => b.nome === "x")?.upstream_sumiu).toBe(false);
+    expect(semRemotas.locais.find((b) => b.nome === "main")?.upstream_sumiu).toBe(false);
+
+    // com remotas: true
+    const res = await gitBranches(git, repo, { remotas: true });
+    const originX = res.remotas?.find((b) => b.nome === "origin/x");
+    const originMain = res.remotas?.find((b) => b.nome === "origin/main");
+    expect(originX?.sumiu_do_remoto).toBe(true);
+    expect(originMain?.sumiu_do_remoto).toBeUndefined();
+
+    const localX = res.locais.find((b) => b.nome === "x");
+    const localMain = res.locais.find((b) => b.nome === "main");
+    expect(localX?.upstream_sumiu).toBe(true);
+    expect(localMain?.upstream_sumiu).toBe(false);
+
+    // remoto apontando para pasta inexistente: nenhuma entrada é marcada e remotoVivo.ok é false
+    sh(repo, "remote", "set-url", "origin", join(makeTempDir(), "nao-existe.git"));
+    const falha = await gitBranches(git, repo, { remotas: true });
+    expect(falha.remotoVivo?.ok).toBe(false);
+    expect(falha.remotas?.find((b) => b.nome === "origin/x")?.sumiu_do_remoto).toBeUndefined();
+    expect(falha.locais.find((b) => b.nome === "x")?.upstream_sumiu).toBe(false);
   });
 });

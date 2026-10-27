@@ -191,6 +191,42 @@ describe("settings tab: automation", () => {
   });
 });
 
+describe("settings tab: event notes", () => {
+  it("shows initial states of the 5 toggles (Branch/PR/Deploy on, Commit/Push off)", () => {
+    const { tab } = setup();
+    tab.display();
+    expect(byName(tab, "Branch notes").components[0].value).toBe(true);
+    expect(byName(tab, "PR notes").components[0].value).toBe(true);
+    expect(byName(tab, "Deploy notes").components[0].value).toBe(true);
+    expect(byName(tab, "Commit notes").components[0].value).toBe(false);
+    expect(byName(tab, "Push notes").components[0].value).toBe(false);
+  });
+
+  it("switching on Commit notes sets ['commit', 'branch', 'pr', 'deploy'] and saves", () => {
+    const { host, tab } = setup();
+    tab.display();
+    byName(tab, "Commit notes").components[0].changeFn(true);
+    expect(host.settings.eventTypes).toEqual(["commit", "branch", "pr", "deploy"]);
+    expect(host.saveSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it("switching off PR notes removes pr", () => {
+    const { host, tab } = setup();
+    tab.display();
+    byName(tab, "PR notes").components[0].changeFn(false);
+    expect(host.settings.eventTypes).toEqual(["branch", "deploy"]);
+    expect(host.settings.eventTypes).not.toContain("pr");
+    expect(host.saveSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it("has 'Notas de commit' in Portuguese", () => {
+    setMockLanguage("pt");
+    const { tab } = setup();
+    tab.display();
+    expect(byName(tab, "Notas de commit")).toBeDefined();
+  });
+});
+
 describe("settings tab: hook note", () => {
   it("explains that the hook mode lives in the AI Ecosystem configuration", () => {
     const { tab } = setup();

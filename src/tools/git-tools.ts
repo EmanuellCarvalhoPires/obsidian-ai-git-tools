@@ -20,6 +20,7 @@ import { gitMerge } from "../core/git/merge";
 import { gitPull, PullNotFastForwardError } from "../core/git/pull";
 import { gitPush, PushRejectedError } from "../core/git/push";
 import { gitRemoteInfo } from "../core/git/remote-info";
+import type { RemoteInfoResult } from "../core/git/remote-info";
 import { gitRevert, RevertMergeError } from "../core/git/revert";
 import { gitStash } from "../core/git/stash";
 import { gitStatus } from "../core/git/status";
@@ -32,7 +33,7 @@ import type { GitRunner, ProjectLookup, SecureHttp } from "../core/ports";
 import type { ProviderFactory, ProviderId } from "../core/providers/provider";
 import type { SecretsGetter } from "../core/providers/secrets";
 import { resolveRepo } from "../core/repo-resolver";
-import type { ResolvedRepo } from "../core/repo-resolver";
+import type { RemoteCache, ResolvedRepo } from "../core/repo-resolver";
 import type { HubTool, HubToolResult } from "../ecosystem/types";
 import type { Settings } from "../types";
 import { withToolMetadata } from "./metadata";
@@ -53,7 +54,6 @@ import {
   GIT_MERGE_SCHEMA,
   GIT_PULL_SCHEMA,
   GIT_PUSH_SCHEMA,
-  GIT_REMOTE_INFO_SCHEMA,
   GIT_REVERT_SCHEMA,
   GIT_STASH_SCHEMA,
   GIT_STATUS_SCHEMA,
@@ -89,6 +89,8 @@ export interface GitToolDeps {
   tracker?: ProjectLookup;
   /** Reads the remote (PRs and deploys) for git_sync with `remoto`. Without it that option only warns. */
   remoteSync?: Pick<RemoteSync, "syncProject">;
+  /** Short-lived cache of the git remote of each repository; the plugin sets it, the tests leave it out. */
+  remoteCache?: RemoteCache;
 }
 
 // ---------------------------------------------------------------------------
@@ -144,7 +146,7 @@ export type ToolAnnotations = NonNullable<HubTool["annotations"]>;
 
 /**
  * Annotations of the read tools. `git_branches` with `remotas` runs `ls-remote` and
- * `git_remote_info` only reads local config; `openWorldHint` stays false for both because the
+ * `git_status` with `remoto` only reads local config; `openWorldHint` stays false for both because the
  * only network access is a read-only listing of the repository's own remote.
  */
 export const READ_ONLY: ToolAnnotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
@@ -188,6 +190,7 @@ export function defineRepoTool(deps: GitToolDeps, spec: RepoToolSpec): HubTool {
           projects: deps.projects,
           allowedFolders: deps.allowedFolders,
           allowAnyFolder: deps.allowAnyFolder,
+          remoteCache: deps.remoteCache,
         });
         const result = await spec.run({ deps, git: deps.git, repo }, args);
         return await documented(deps, spec.name, repo, result);
@@ -254,6 +257,9 @@ export function defineFreeTool(deps: GitToolDeps, spec: FreeToolSpec): HubTool {
 // Text helpers
 // ---------------------------------------------------------------------------
 
+const UNTRACKED_TEXT_MAX = 30;
+const UNTRACKED_DATA_MAX = 100;
+
 function entriesText(label: string, list: StatusEntry[]): string[] {
   if (list.length === 0) return [];
   return [`${label} (${list.length}):`, ...list.map((e) => `  ${e.status} ${e.origem !== undefined ? `${e.origem} -> ` : ""}${e.caminho}`)];
@@ -264,8 +270,42 @@ function commitLine(c: CommitInfo): string {
 }
 
 function branchLine(b: BranchInfo): string {
-  const track = b.upstream !== undefined ? ` -> ${b.upstream}${b.upstream_sumiu ? " (sumiu do remoto)" : ` (+${b.ahead}/-${b.behind})`}` : "";
+  const track =
+    b.upstream !== undefined
+      ? ` -> ${b.upstream}${b.upstream_sumiu ? " (sumiu do remoto)" : ` (+${b.ahead}/-${b.behind})`}`
+      : b.sumiu_do_remoto === true
+        ? " (sumiu do remoto)"
+        : "";
   return `${b.atual ? "* " : "  "}${b.nome} ${b.hash.slice(0, 7)}${track}`;
+}
+
+/** Text lines and structured fields of the remotes of a repository (git_status with remoto=true). */
+function remoteInfoAnswer(info: RemoteInfoResult): { lines: string[]; data: Record<string, unknown> } {
+  if (info.principal === undefined) {
+    return {
+      lines: ["O repositório não tem remoto configurado."],
+      data: { remotos: [], principal: null, provedor: null, dono: null, slug: null, branch_padrao: null, secret_configurada: false },
+    };
+  }
+  const where = info.provedor !== undefined ? `${info.provedor} ${info.dono ?? ""}/${info.slug ?? ""}` : "provedor não reconhecido";
+  const lines = [
+    `Remoto principal: ${info.principal} (${where}).`,
+    `Branch padrão: ${info.branchPadrao ?? "desconhecida"}.`,
+    info.provedor !== undefined ? `Secret do ${info.provedor}: ${info.secretConfigurada ? "configurada" : "não configurada"}.` : "",
+    ...info.remotos.map((r) => `  ${r.nome}: ${r.url_fetch}`),
+  ].filter((l) => l !== "");
+  return {
+    lines,
+    data: {
+      remotos: info.remotos,
+      principal: info.principal,
+      provedor: info.provedor ?? null,
+      dono: info.dono ?? null,
+      slug: info.slug ?? null,
+      branch_padrao: info.branchPadrao ?? null,
+      secret_configurada: info.secretConfigurada,
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -278,10 +318,11 @@ export function buildReadTools(deps: GitToolDeps): HubTool[] {
       name: "git_status",
       title: "Estado do repositório",
       description:
-        "Mostra a branch atual, o upstream, quantos commits o local está à frente e atrás, e os arquivos no stage, fora do stage, não rastreados e em conflito. Só lê.",
+        "Mostra a branch atual, o upstream, quantos commits o local está à frente e atrás, e os arquivos no stage, fora do stage, não rastreados e em conflito. A lista de não rastreados é cortada (30 no texto, 100 no structured), com o total em untracked_total. Com remoto=true inclui também os remotos (URLs sem credenciais), o provedor, o dono, o slug, a branch padrão e se há secret do provedor (só sim ou não). Só lê.",
       inputSchema: GIT_STATUS_SCHEMA,
       annotations: READ_ONLY,
-      async run({ git, repo }) {
+      async run({ deps: d, git, repo }, args) {
+        const comRemoto = optBool(args, "remoto") === true;
         const st = await gitStatus(git, repo.root);
         const head = st.branch ?? "(HEAD solto)";
         const track = st.upstream !== undefined ? ` -> ${st.upstream} (${st.ahead} à frente, ${st.behind} atrás)` : " (sem upstream)";
@@ -291,9 +332,26 @@ export function buildReadTools(deps: GitToolDeps): HubTool[] {
           lines.push(
             ...entriesText("No stage", st.staged),
             ...entriesText("Fora do stage", st.unstaged),
-            ...(st.untracked.length > 0 ? [`Não rastreados (${st.untracked.length}):`, ...st.untracked.map((p) => `  ${p}`)] : []),
+            ...(st.untracked.length > 0
+              ? [
+                  `Não rastreados (${st.untracked.length}):`,
+                  ...st.untracked.slice(0, UNTRACKED_TEXT_MAX).map((p) => `  ${p}`),
+                  ...(st.untracked.length > UNTRACKED_TEXT_MAX
+                    ? [`  ... e mais ${st.untracked.length - UNTRACKED_TEXT_MAX} (veja o .gitignore ou use git_add com caminhos)`]
+                    : []),
+                ]
+              : []),
             ...(st.conflitos.length > 0 ? [`Em conflito (${st.conflitos.length}):`, ...st.conflitos.map((p) => `  ${p}`)] : []),
           );
+        }
+        let remoteData: Record<string, unknown> = {};
+        if (comRemoto) {
+          const s = d.settings();
+          const a = remoteInfoAnswer(
+            await gitRemoteInfo(git, repo.root, { secrets: { github: s.secretGithub.trim() !== "", bitbucket: s.secretBitbucket.trim() !== "" } }),
+          );
+          lines.push(...a.lines);
+          remoteData = a.data;
         }
         return ok(lines.join("\n"), {
           repo: repo.root,
@@ -305,9 +363,12 @@ export function buildReadTools(deps: GitToolDeps): HubTool[] {
           behind: st.behind,
           staged: st.staged,
           unstaged: st.unstaged,
-          untracked: st.untracked,
+          untracked: st.untracked.slice(0, UNTRACKED_DATA_MAX),
+          untracked_total: st.untracked.length,
+          untracked_truncado: st.untracked.length > UNTRACKED_DATA_MAX,
           conflitos: st.conflitos,
           limpo: st.limpo,
+          ...remoteData,
         });
       },
     }),
@@ -316,7 +377,7 @@ export function buildReadTools(deps: GitToolDeps): HubTool[] {
       name: "git_diff",
       title: "Diferenças",
       description:
-        "Mostra as diferenças da árvore de trabalho (worktree), do stage (staged) ou entre duas referências (refs). Não inclui arquivos ainda não rastreados. O texto é cortado em max_bytes e marcado como truncado. Só lê.",
+        "Mostra as diferenças da árvore de trabalho (worktree), do stage (staged) ou entre duas referências (refs). Não inclui arquivos ainda não rastreados. O texto é cortado em max_bytes (padrão 40000) e marcado como truncado, e o que ficou de fora vem listado em omitidos; as linhas de índice do git são removidas. Só lê.",
       inputSchema: GIT_DIFF_SCHEMA,
       annotations: READ_ONLY,
       async run({ git, repo }, args) {
@@ -337,7 +398,15 @@ export function buildReadTools(deps: GitToolDeps): HubTool[] {
         const summary = res.vazio
           ? `Sem diferenças (${where}).`
           : `Diff (${where}): ${res.bytes} bytes${res.truncado ? ` de ${res.bytesTotal}, truncado em max_bytes` : ""}.`;
-        return ok(res.vazio ? summary : `${summary}\n\n${res.diff}`, {
+        let text = res.vazio ? summary : `${summary}\n\n${res.diff}`;
+        if (res.omitidos.length > 0) {
+          const omitLines = [
+            `Arquivos que ficaram de fora (${res.omitidos.length}): use caminhos para pedir só um deles ou aumente max_bytes:`,
+            ...res.omitidos.map((o) => `  +${o.adicionadas ?? "?"} -${o.removidas ?? "?"} ${o.caminho}`),
+          ];
+          text += `\n\n${omitLines.join("\n")}`;
+        }
+        return ok(text, {
           repo: repo.root,
           alvo: res.alvo,
           ...(res.base !== undefined ? { base: res.base } : {}),
@@ -347,6 +416,7 @@ export function buildReadTools(deps: GitToolDeps): HubTool[] {
           bytes: res.bytes,
           bytes_total: res.bytesTotal,
           vazio: res.vazio,
+          omitidos: res.omitidos,
         });
       },
     }),
@@ -355,10 +425,11 @@ export function buildReadTools(deps: GitToolDeps): HubTool[] {
       name: "git_log",
       title: "Histórico de commits",
       description:
-        "Lista commits (hash, autor, data, assunto, pais) com filtros por referência, intervalo, datas, autor e caminho. Com hash devolve o commit completo, com o corpo da mensagem e as estatísticas de arquivos. Só lê.",
+        "Lista commits (hash curto, data, autor, assunto; padrão 10) com filtros por referência, intervalo, datas, autor e caminho. Com completo=true o structured traz também hash inteiro, e-mail e pais. Com hash devolve o commit completo, com o corpo da mensagem e as estatísticas de arquivos. Só lê.",
       inputSchema: GIT_LOG_SCHEMA,
       annotations: READ_ONLY,
       async run({ git, repo }, args) {
+        const completo = optBool(args, "completo") === true;
         const res = await gitLog(git, repo.root, {
           ref: optString(args, "ref"),
           limite: optInt(args, "limite"),
@@ -369,16 +440,26 @@ export function buildReadTools(deps: GitToolDeps): HubTool[] {
           intervalo: optString(args, "intervalo"),
           hash: optString(args, "hash"),
         });
-        const commits = res.commits.map((c) => ({
-          hash: c.hash,
-          hash_curto: c.hashCurto,
-          autor: c.autor,
-          email: c.email,
-          data: c.data,
-          assunto: c.assunto,
-          pais: c.pais,
-          ...(c.corpo !== undefined ? { corpo: c.corpo } : {}),
-        }));
+        const isCompleto = completo || res.estatistica !== undefined;
+        const commits = res.commits.map((c) =>
+          isCompleto
+            ? {
+                hash: c.hash,
+                hash_curto: c.hashCurto,
+                autor: c.autor,
+                email: c.email,
+                data: c.data,
+                assunto: c.assunto,
+                pais: c.pais,
+                ...(c.corpo !== undefined ? { corpo: c.corpo } : {}),
+              }
+            : {
+                hash_curto: c.hashCurto,
+                data: c.data.slice(0, 10),
+                autor: c.autor,
+                assunto: c.assunto,
+              },
+        );
         const first = res.commits[0];
         let text: string;
         if (res.estatistica !== undefined && first) {
@@ -402,7 +483,7 @@ export function buildReadTools(deps: GitToolDeps): HubTool[] {
       name: "git_blame",
       title: "Autoria das linhas",
       description:
-        "Mostra, para cada linha de um arquivo (ou de um intervalo de linhas), o commit, o autor e a data da última alteração. Limitado a 2000 linhas. Só lê.",
+        "Mostra, para cada linha de um arquivo (ou de um intervalo de linhas), o commit da última alteração; o texto agrupa as linhas por commit (autor e data aparecem uma vez por trecho) e o structured traz a lista de commits sem repetição. Limitado a 2000 linhas. Só lê.",
       inputSchema: GIT_BLAME_SCHEMA,
       annotations: READ_ONLY,
       async run({ git, repo }, args) {
@@ -412,14 +493,45 @@ export function buildReadTools(deps: GitToolDeps): HubTool[] {
           linhaFim: optInt(args, "linha_fim"),
           ref: optString(args, "ref"),
         });
-        const text =
-          res.linhas.length === 0
-            ? `Nenhuma linha em ${res.caminho}.`
-            : [
-                `${res.linhas.length} linha(s) de ${res.caminho}${res.truncado ? " (truncado em 2000)" : ""}:`,
-                ...res.linhas.map((l) => `${String(l.linha).padStart(4)} ${l.hash.slice(0, 7)} ${l.autor} ${l.data.slice(0, 10)}: ${l.conteudo}`),
-              ].join("\n");
-        return ok(text, { repo: repo.root, caminho: res.caminho, linhas: res.linhas, truncado: res.truncado });
+        let text: string;
+        if (res.linhas.length === 0) {
+          text = `Nenhuma linha em ${res.caminho}.`;
+        } else {
+          const lines = [`${res.linhas.length} linha(s) de ${res.caminho}${res.truncado ? " (truncado em 2000)" : ""}:`];
+          let prevHash: string | undefined;
+          for (const l of res.linhas) {
+            if (l.hash !== prevHash) {
+              lines.push(`@ ${l.hash.slice(0, 7)} ${l.autor} ${l.data.slice(0, 10)} - ${l.resumo}`);
+              prevHash = l.hash;
+            }
+            lines.push(`${String(l.linha).padStart(4)} ${l.conteudo}`);
+          }
+          text = lines.join("\n");
+        }
+        const seen = new Set<string>();
+        const commits: {
+          hash: string;
+          hash_curto: string;
+          autor: string;
+          email: string;
+          data: string;
+          resumo: string;
+        }[] = [];
+        for (const l of res.linhas) {
+          if (!seen.has(l.hash)) {
+            seen.add(l.hash);
+            commits.push({
+              hash: l.hash,
+              hash_curto: l.hash.slice(0, 7),
+              autor: l.autor,
+              email: l.email,
+              data: l.data,
+              resumo: l.resumo,
+            });
+          }
+        }
+        const linhas = res.linhas.map((l) => ({ linha: l.linha, commit: l.hash.slice(0, 7), conteudo: l.conteudo }));
+        return ok(text, { repo: repo.root, caminho: res.caminho, commits, linhas, truncado: res.truncado });
       },
     }),
 
@@ -427,64 +539,53 @@ export function buildReadTools(deps: GitToolDeps): HubTool[] {
       name: "git_branches",
       title: "Branches",
       description:
-        "Lista as branches locais com upstream, commits à frente e atrás e último commit. Com remotas=true inclui as branches de acompanhamento remoto e consulta o remoto (ls-remote); se a consulta falhar, avisa e continua. Com mescladas_em lista só as já mescladas na referência. Só lê.",
+        "Lista as branches locais com upstream, commits à frente e atrás e último commit. Com remotas=true inclui as branches de acompanhamento remoto e consulta o remoto (ls-remote), listando só as branches do remoto que ainda não foram buscadas; se a consulta falhar, avisa e continua. Com mescladas_em lista só as já mescladas na referência. Com remotas=true marca como sumiu do remoto as branches que o remoto já não tem (o git_fetch nunca apaga referências). Só lê.",
       inputSchema: GIT_BRANCHES_SCHEMA,
       annotations: READ_ONLY,
       async run({ git, repo }, args) {
         const res = await gitBranches(git, repo.root, { remotas: optBool(args, "remotas"), mescladasEm: optString(args, "mescladas_em") });
         const avisos: string[] = [];
         if (res.remotoVivo && !res.remotoVivo.ok) avisos.push(`Não foi possível consultar o remoto${res.remotoVivo.remoto !== "" ? ` ${res.remotoVivo.remoto}` : ""}: ${res.remotoVivo.erro ?? "erro desconhecido"}`);
+        const remotasCompactas = res.remotas?.map((b) => ({
+          nome: b.nome,
+          hash: b.hash,
+          data: b.data,
+          assunto: b.assunto,
+          ...(b.sumiu_do_remoto === true ? { sumiu_do_remoto: true } : {}),
+        }));
+        const somenteNoRemoto =
+          res.remotoVivo?.ok
+            ? res.remotoVivo.branches
+                .map((b) => b.nome)
+                .filter((nome) => !res.remotas?.some((r) => r.nome === `${res.remotoVivo!.remoto}/${nome}`))
+            : [];
         const lines = [`${res.locais.length} branch(es) local(is); atual: ${res.atual ?? "(HEAD solto)"}.`, ...res.locais.map(branchLine)];
         if (res.remotas) lines.push(`${res.remotas.length} branch(es) remota(s) conhecida(s):`, ...res.remotas.map(branchLine));
-        if (res.remotoVivo?.ok) lines.push(`No remoto ${res.remotoVivo.remoto}: ${res.remotoVivo.branches.map((b) => b.nome).join(", ") || "nenhuma branch"}.`);
+        if (res.remotoVivo?.ok) {
+          lines.push(
+            `No remoto ${res.remotoVivo.remoto}: ${res.remotoVivo.branches.length} branch(es)${somenteNoRemoto.length > 0 ? `; ainda não buscadas (git_fetch): ${somenteNoRemoto.join(", ")}` : ""}.`,
+          );
+        }
+        const remotoVivoStructured = res.remotoVivo
+          ? {
+              remoto: res.remotoVivo.remoto,
+              ok: res.remotoVivo.ok,
+              ...(res.remotoVivo.erro !== undefined ? { erro: res.remotoVivo.erro } : {}),
+              total: res.remotoVivo.ok ? res.remotoVivo.branches.length : 0,
+              somente_no_remoto: somenteNoRemoto,
+            }
+          : undefined;
         return ok(
           lines.join("\n"),
           {
             repo: repo.root,
             atual: res.atual ?? null,
             locais: res.locais,
-            ...(res.remotas ? { remotas: res.remotas } : {}),
-            ...(res.remotoVivo ? { remoto_vivo: res.remotoVivo } : {}),
+            ...(remotasCompactas ? { remotas: remotasCompactas } : {}),
+            ...(remotoVivoStructured ? { remoto_vivo: remotoVivoStructured } : {}),
           },
           { avisos },
         );
-      },
-    }),
-
-    defineRepoTool(deps, {
-      name: "git_remote_info",
-      title: "Remotos do repositório",
-      description:
-        "Mostra os remotos (URLs sem credenciais), o provedor (GitHub ou Bitbucket), o dono ou workspace, o slug, a branch padrão e se há secret configurada para o provedor (só sim ou não, nunca o valor). Só lê.",
-      inputSchema: GIT_REMOTE_INFO_SCHEMA,
-      annotations: READ_ONLY,
-      async run({ deps: d, git, repo }) {
-        const s = d.settings();
-        const info = await gitRemoteInfo(git, repo.root, {
-          secrets: { github: s.secretGithub.trim() !== "", bitbucket: s.secretBitbucket.trim() !== "" },
-        });
-        if (info.principal === undefined) {
-          return ok("O repositório não tem remoto configurado.", { repo: repo.root, remotos: [], principal: null, provedor: null, dono: null, slug: null, branch_padrao: null, secret_configurada: false });
-        }
-        const where = info.provedor !== undefined ? `${info.provedor} ${info.dono ?? ""}/${info.slug ?? ""}` : "provedor não reconhecido";
-        const text = [
-          `Remoto principal: ${info.principal} (${where}).`,
-          `Branch padrão: ${info.branchPadrao ?? "desconhecida"}.`,
-          info.provedor !== undefined ? `Secret do ${info.provedor}: ${info.secretConfigurada ? "configurada" : "não configurada"}.` : "",
-          ...info.remotos.map((r) => `  ${r.nome}: ${r.url_fetch}`),
-        ]
-          .filter((l) => l !== "")
-          .join("\n");
-        return ok(text, {
-          repo: repo.root,
-          remotos: info.remotos,
-          principal: info.principal,
-          provedor: info.provedor ?? null,
-          dono: info.dono ?? null,
-          slug: info.slug ?? null,
-          branch_padrao: info.branchPadrao ?? null,
-          secret_configurada: info.secretConfigurada,
-        });
       },
     }),
   ];

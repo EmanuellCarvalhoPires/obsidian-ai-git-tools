@@ -7,7 +7,7 @@ import type { ChangelogOptions, ChangelogResult } from "./changelog";
 import { CheckpointStore } from "./checkpoints";
 import type { DevState } from "./checkpoints";
 import { branchId, commitId, eventIdOf, eventPath, pushId, renderEventNote, sanitizeFilename } from "./events";
-import type { DevEvent } from "./events";
+import type { DevEvent, DevEventType } from "./events";
 import { LOG_FORMAT, layout, parseLog, toSvg } from "./graph";
 import type { Highlight, Row } from "./graph";
 import type { GitRunner, ProjectInfo, VaultPort } from "../ports";
@@ -32,6 +32,8 @@ export interface RecordResult {
   /** Path of the note of the event (the existing one when it was not created now). */
   path: string;
   created: boolean;
+  /** True when the kind of event is switched off in the settings: nothing was written. */
+  ignorado?: boolean;
 }
 
 export interface GraphResult {
@@ -57,7 +59,7 @@ export class HistoryService {
     private readonly git: GitRunner,
     private readonly vault: VaultPort,
     private readonly store: CheckpointStore,
-    private readonly settings: () => Pick<Settings, "eventsFolder"> & Partial<Pick<Settings, "changelogsFolder">>,
+    private readonly settings: () => Pick<Settings, "eventsFolder"> & Partial<Pick<Settings, "changelogsFolder" | "eventTypes">>,
     private readonly now: () => number = Date.now,
   ) {}
 
@@ -66,12 +68,19 @@ export class HistoryService {
     return `${project.folder}/${this.settings().eventsFolder}`;
   }
 
+  /** Without the setting (tests) every kind is on. */
+  isTypeEnabled(tipo: DevEventType): boolean {
+    const types = this.settings().eventTypes;
+    return types === undefined || types.includes(tipo);
+  }
+
   /**
    * Records one event as a note, once. Looks for an existing note of the same event (by the id the
    * service stored, by `evento_id` in the frontmatter of the whole events folder, and by the path
    * of the note), so a note written by the AI Log Manager is never written again.
    */
-  record(project: ProjectInfo, ev: DevEvent): Promise<RecordResult> {
+  record(project: ProjectInfo, ev: DevEvent, options: { forcar?: boolean } = {}): Promise<RecordResult> {
+    if (options.forcar !== true && !this.isTypeEnabled(ev.tipo)) return Promise.resolve({ path: "", created: false, ignorado: true });
     return this.serial(() => this.recordNow(project, ev));
   }
 
@@ -79,7 +88,8 @@ export class HistoryService {
    * Records an event that comes from the remote (pull request, deploy). For a pull request that
    * already has a note, the state in the note follows the remote (open, merged, declined).
    */
-  recordRemote(project: ProjectInfo, ev: DevEvent): Promise<RecordResult & { updated: boolean }> {
+  recordRemote(project: ProjectInfo, ev: DevEvent, options: { forcar?: boolean } = {}): Promise<RecordResult & { updated: boolean }> {
+    if (options.forcar !== true && !this.isTypeEnabled(ev.tipo)) return Promise.resolve({ path: "", created: false, ignorado: true, updated: false });
     return this.serial(async () => {
       const result = await this.recordNow(project, ev);
       let updated = false;
@@ -123,7 +133,7 @@ export class HistoryService {
 
   /**
    * What the remote reads (pull requests and deploys) already saw: id -> last known state. Undefined
-   * while the project has no git baseline.
+  * while the project has no git baseline.
    */
   remoteMarks(project: ProjectInfo): Record<string, string> | undefined {
     const state = this.store.getDev(project.name);
@@ -181,8 +191,8 @@ export class HistoryService {
         }
       } else {
         const events: DevEvent[] = [];
-        await this.commitEvents(project, cwd, state, events);
-        await this.pushEvents(project, cwd, state, tips, events);
+        if (this.isTypeEnabled("commit")) await this.commitEvents(project, cwd, state, events);
+        if (this.isTypeEnabled("push")) await this.pushEvents(project, cwd, state, tips, events);
         for (const [name, hash] of Object.entries(locals)) {
           if (state.branches.includes(name)) continue;
           events.push({ tipo: "branch", projeto: project.name, id: branchId(name, hash), titulo: name, data: new Date(started), branch: name, hash });
@@ -220,6 +230,19 @@ export class HistoryService {
     const commits = parseLog(await this.git(cwd, ["log", ...HISTORY_REVS, "--date-order", LOG_FORMAT, "-n", String(limit)]));
     const { rows, lanes } = layout(commits);
     return { svg: toSvg(rows, lanes, this.now(), options.width ?? 320, options.highlight ?? {}), rows, lanes };
+  }
+
+  /**
+   * Saves the SVG of the repository graph as a file of the project (`<project folder>/Anexos/<name> - grafo.svg`),
+   * replacing the previous one, and returns its vault path.
+   */
+  async saveGraphSvg(project: ProjectInfo, svg: string): Promise<string> {
+    const folder = `${project.folder}/Anexos`;
+    const path = `${folder}/${sanitizeFilename(project.name)} - grafo.svg`;
+    await this.vault.ensureFolder(folder);
+    if (this.vault.exists(path)) await this.vault.process(path, () => svg);
+    else await this.vault.create(path, svg);
+    return path;
   }
 
   // ---------------------------------------------------------------- internals
@@ -294,6 +317,7 @@ export class HistoryService {
     for (const [key, tip] of Object.entries(tips)) {
       const old = state.tips[key];
       if (old === tip) continue;
+      if (!(await this.movedByPush(cwd, key, old))) continue;
       const branch = key.slice(key.indexOf("/") + 1);
       let details: string | undefined;
       let count: number | undefined;
@@ -316,6 +340,26 @@ export class HistoryService {
         hash: tip,
         detalhes: details,
       });
+    }
+  }
+
+  /**
+   * True when the remote-tracking branch `key` (e.g. "origin/main") moved because of a push: walking its reflog from the
+   * newest entry, a "update by push" entry shows up before the entry that holds the previously known tip. A fetch or a
+   * pull is not a push. No evidence (empty reflog, git error) means false.
+   */
+  private async movedByPush(cwd: string, key: string, old: string | undefined): Promise<boolean> {
+    try {
+      const out = await this.git(cwd, ["reflog", "show", "--format=%H%x1f%gs", "-n", "20", `refs/remotes/${key}`]);
+      for (const line of out.split("\n")) {
+        const [hash = "", subject = ""] = line.trim().split("\x1f");
+        if (hash === "") continue;
+        if (old !== undefined && hash === old) return false;
+        if (subject.startsWith("update by push")) return true;
+      }
+      return false;
+    } catch {
+      return false;
     }
   }
 }

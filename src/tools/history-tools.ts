@@ -1,7 +1,9 @@
 // The documentation tools: git_graph, git_changelog, git_sync and git_registrar_evento. They work
 // on a PROJECT (`projeto` = the name of a note tagged dev/projeto, resolved by the ProjectTracker),
 // not on a repository path: the notes they write live in that project's folder of the vault.
-// Port of dev_graph, dev_changelog, dev_sync and dev_record_event of the AI Log Manager.
+// Ownership: these four tools are the owner of the task in the AI Ecosystem. The equivalent dev_graph, dev_changelog,
+// dev_sync and dev_record_event tools of the AI Log Manager have to be switched off in that module (not done in this
+// repository), so that each task has a single owner. Ported from them.
 //
 // An unknown project, or one whose note has no clone (or whose clone is not a git repository), is
 // `argumento_invalido` with the list of the projects that can be used.
@@ -18,10 +20,11 @@
 // here uses those helpers while the module loads, so the import cycle is harmless.
 import { assertRevision } from "../core/git/revision";
 import { assertRefNameSyntax, GuardError } from "../core/guards";
-import { branchId, commitId, DEV_EVENT_TYPES, isDevEventType } from "../core/history/events";
+import { branchId, commitId, DEV_EVENT_TYPES, isDevEventType, prId } from "../core/history/events";
 import type { DevEvent } from "../core/history/events";
 import type { RemoteSyncResult } from "../core/history/remote-sync";
 import type { ProjectInfo } from "../core/ports";
+import { readRemote } from "../core/repo-resolver";
 import type { HubTool, HubToolResult } from "../ecosystem/types";
 import { assertKnownArgs, optBool, optInt, optString, reqString } from "./git-tools";
 import type { Args, GitToolDeps, ToolAnnotations } from "./git-tools";
@@ -94,7 +97,7 @@ function graphTool(deps: HistoryDeps): HubTool {
     name: "git_graph",
     title: "Grafo do repositório",
     description:
-      "Desenha o grafo de commits de um projeto (os mais novos de todas as branches) e devolve as linhas em texto e o SVG. branch e hash destacam uma branch e um commit. Só lê.",
+      "Desenha o grafo de commits de um projeto (os mais novos de todas as branches). Por padrão devolve só as linhas em texto (formato texto); formato arquivo grava o SVG na pasta Anexos do projeto e devolve o caminho; formato svg devolve o SVG inteiro na resposta (caro). branch e hash destacam uma branch e um commit. Só lê (o formato arquivo só grava no cofre).",
     inputSchema: GIT_GRAPH_SCHEMA,
     annotations: READ_ONLY_DOC,
     async run(d, args) {
@@ -102,28 +105,43 @@ function graphTool(deps: HistoryDeps): HubTool {
       const branch = optString(args, "branch");
       const hash = optString(args, "hash");
       const limite = optInt(args, "limite");
+      const formato = optString(args, "formato") ?? "texto";
+      if (formato !== "texto" && formato !== "arquivo" && formato !== "svg") {
+        throw new GuardError(`formato inválido: ${formato} (use texto, arquivo ou svg).`);
+      }
       if (branch !== undefined) assertRefNameSyntax(branch);
       if (hash !== undefined) assertRevision(hash);
-      const g = await d.history.graph(project, { ...(limite !== undefined ? { limit: limite } : {}), highlight: { ...(branch !== undefined ? { branch } : {}), ...(hash !== undefined ? { hash } : {}) } });
-      const linhas = g.rows.map((r) => ({
-        hash: r.hash,
-        hash_curto: r.hash.slice(0, 7),
-        assunto: r.subject,
-        autor: r.author,
-        data: new Date(r.time * 1000).toISOString(),
-        refs: r.refs,
-        faixa: r.lane,
-        head: r.isHead,
-      }));
-      const text = linhas.map((l) => `${"| ".repeat(l.faixa)}* ${l.hash_curto}${l.refs.length > 0 ? ` (${l.refs.join(", ")})` : ""} ${l.assunto} - ${l.autor}`);
+      let g: Awaited<ReturnType<typeof d.history.graph>>;
+      try {
+        g = await d.history.graph(project, { ...(limite !== undefined ? { limit: limite } : {}), highlight: { ...(branch !== undefined ? { branch } : {}), ...(hash !== undefined ? { hash } : {}) } });
+      } catch {
+        // An empty repository has no commits yet.
+        g = { rows: [], lanes: 0, svg: "" };
+      }
       const header = `Grafo de ${project.name}: ${plural(g.rows.length, "commit", "commits")} em ${plural(g.lanes, "faixa", "faixas")}.`;
-      return ok(g.rows.length === 0 ? `${header}\nO repositório ainda não tem commits.` : `${header}\n${text.join("\n")}\n\nSVG:\n${g.svg}`, {
-        projeto: project.name,
-        commits: g.rows.length,
-        faixas: g.lanes,
-        linhas,
-        svg: g.svg,
-      });
+      if (g.rows.length === 0) {
+        return ok(`${header}\nO repositório ainda não tem commits.`, { projeto: project.name, commits: 0, faixas: g.lanes, formato });
+      }
+      const text = g.rows.map((r) => `${"| ".repeat(r.lane)}* ${r.hash.slice(0, 7)}${r.refs.length > 0 ? ` (${r.refs.join(", ")})` : ""} ${r.subject} - ${r.author}`);
+      const corpo = `${header}\n${text.join("\n")}`;
+      if (formato === "arquivo") {
+        const caminho = await d.history.saveGraphSvg(project, g.svg);
+        return ok(`${corpo}\n\nSVG gravado em ${caminho}`, { projeto: project.name, commits: g.rows.length, faixas: g.lanes, formato, caminho });
+      }
+      if (formato === "svg") {
+        const linhas = g.rows.map((r) => ({
+          hash: r.hash,
+          hash_curto: r.hash.slice(0, 7),
+          assunto: r.subject,
+          autor: r.author,
+          data: new Date(r.time * 1000).toISOString(),
+          refs: r.refs,
+          faixa: r.lane,
+          head: r.isHead,
+        }));
+        return ok(`${corpo}\n\nSVG:\n${g.svg}`, { projeto: project.name, commits: g.rows.length, faixas: g.lanes, formato, linhas, svg: g.svg });
+      }
+      return ok(corpo, { projeto: project.name, commits: g.rows.length, faixas: g.lanes, formato });
     },
   });
 }
@@ -271,7 +289,7 @@ function registrarTool(deps: HistoryDeps): HubTool {
     name: "git_registrar_evento",
     title: "Registrar evento do projeto",
     description:
-      "Grava um evento de desenvolvimento (commit, push, branch, pr ou deploy) como nota em Eventos do projeto, uma vez por evento: repetir a chamada não duplica. Commits, pushes e branches já são gravados sozinhos; use para o que o repositório não mostra (PR aberto por fora, deploy, push de outra máquina). Com tipo commit e hash, ou tipo branch com branch e hash, usa o mesmo id da gravação automática.",
+      "Grava um evento de desenvolvimento (commit, push, branch, pr ou deploy) como nota em Eventos do projeto, uma vez por evento: repetir a chamada não duplica. Commits, pushes e branches já são gravados sozinhos; use para o que o repositório não mostra (PR aberto por fora, deploy, push de outra máquina). Com tipo commit e hash, ou tipo branch com branch e hash, usa o mesmo id da gravação automática. Para um PR informe numero: o id passa a ser o mesmo da leitura do remoto e o PR não duplica.",
     inputSchema: GIT_REGISTRAR_EVENTO_SCHEMA,
     annotations: WRITE_VAULT,
     async run(d, args) {
@@ -282,6 +300,11 @@ function registrarTool(deps: HistoryDeps): HubTool {
       const branch = optString(args, "branch");
       const hashGiven = optString(args, "hash");
       const url = optString(args, "url");
+      const numero = optInt(args, "numero");
+      if (numero !== undefined) {
+        if (tipo !== "pr") throw new GuardError('"numero" só vale com tipo pr.');
+        if (numero < 1) throw new GuardError('"numero" tem de ser maior que zero.');
+      }
       if (branch !== undefined) assertRefNameSyntax(branch);
       if (hashGiven !== undefined) assertRevision(hashGiven);
       if (url !== undefined && !URL_OK.test(url)) throw new GuardError('"url" tem de começar com http:// ou https://.');
@@ -289,7 +312,11 @@ function registrarTool(deps: HistoryDeps): HubTool {
       const resolved = hashGiven !== undefined ? await fullHash(d, project.clonePath ?? "", hashGiven) : undefined;
       const hash = resolved ?? hashGiven;
       let id: string;
-      if (tipo === "commit" && hash !== undefined) id = commitId(hash);
+      if (tipo === "pr" && numero !== undefined) {
+        const remoto = await readRemote(d.git, project.clonePath ?? "");
+        if (!remoto?.ref) throw new GuardError(`O remoto do clone de "${project.name}" não é do GitHub nem do Bitbucket: não dá para montar o id do PR. Registre sem "numero".`);
+        id = prId(remoto.ref.provider, remoto.ref.repo, numero);
+      } else if (tipo === "commit" && hash !== undefined) id = commitId(hash);
       else if (tipo === "branch" && branch !== undefined && hash !== undefined) id = branchId(branch, hash);
       else id = `${tipo}-${[branch, hashGiven, titulo].filter((p) => p !== undefined && p !== "").join("-")}`;
 
@@ -306,7 +333,7 @@ function registrarTool(deps: HistoryDeps): HubTool {
         ...(optString(args, "ambiente") !== undefined ? { ambiente: optString(args, "ambiente") } : {}),
         ...(optString(args, "detalhes") !== undefined ? { detalhes: optString(args, "detalhes")?.trim() } : {}),
       };
-      const res = await d.history.record(project, ev);
+      const res = await d.history.record(project, ev, { forcar: true });
       return ok(res.created ? `Evento ${id} gravado em ${res.path}.` : `O evento ${id} já estava gravado em ${res.path}; nada foi criado.`, { projeto: project.name, id, criado: res.created, caminho: res.path }, { nota: res.path });
     },
   });

@@ -1,8 +1,8 @@
 import { join, sep } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createNodeGit } from "../../src/core/git-runner";
-import type { ProjectInfo, ProjectLookup } from "../../src/core/ports";
-import { RepoError, isInside, normalizePathKey, resolveRepo } from "../../src/core/repo-resolver";
+import type { GitRunner, ProjectInfo, ProjectLookup } from "../../src/core/ports";
+import { RepoError, createRemoteCache, isInside, normalizePathKey, resolveRepo } from "../../src/core/repo-resolver";
 import type { RepoResolverDeps } from "../../src/core/repo-resolver";
 import { parseRemoteUrl } from "../../src/core/providers/provider";
 import { canLinkDirs, cleanupTemp, linkDir, makeRepo, makeTempDir, sh, writeFile } from "../helpers/git-repos";
@@ -201,5 +201,100 @@ describe("parseRemoteUrl", () => {
     ]) {
       expect(parseRemoteUrl(url), url).toBeUndefined();
     }
+  });
+});
+
+
+describe("RemoteCache and resolveRepo cache behavior", () => {
+  it("calls list once per resolution and never calls byName", async () => {
+    let listCalls = 0;
+    let byNameCalls = 0;
+    const baseLookup = lookup([
+      { name: "Alpha", folder: "Projetos/Alpha", clonePath: projA },
+    ]);
+    const wrappedLookup: ProjectLookup = {
+      list: async () => {
+        listCalls++;
+        return baseLookup.list();
+      },
+      byName: async (name) => {
+        byNameCalls++;
+        return baseLookup.byName(name);
+      },
+      byClone: (path) => baseLookup.byClone(path),
+    };
+    const testDeps: RepoResolverDeps = { ...deps, projects: wrappedLookup };
+
+    const r1 = await resolveRepo("Alpha", testDeps);
+    expect(r1.projeto).toBe("Alpha");
+    expect(listCalls).toBe(1);
+    expect(byNameCalls).toBe(0);
+
+    const r2 = await resolveRepo(projA, testDeps);
+    expect(r2.projeto).toBe("Alpha");
+    expect(listCalls).toBe(2);
+    expect(byNameCalls).toBe(0);
+  });
+
+  it("caches the remote and supports forget and ttl expiry", async () => {
+    const calls: string[][] = [];
+    const spy: GitRunner = (cwd, args, o) => {
+      calls.push(args);
+      return git(cwd, args, o);
+    };
+    let t = 0;
+    const cache = createRemoteCache(30_000, () => t);
+    const testDeps: RepoResolverDeps = { ...deps, git: spy, remoteCache: cache };
+
+    const r1 = await resolveRepo("Alpha", testDeps);
+    expect(calls.filter((a) => a[0] === "remote").length).toBe(2);
+    expect(r1.remoto).toBeDefined();
+
+    const r2 = await resolveRepo("Alpha", testDeps);
+    expect(calls.filter((a) => a[0] === "remote").length).toBe(2);
+    expect(r2.remoto).toEqual(r1.remoto);
+
+    cache.forget(r1.root);
+    const r3 = await resolveRepo("Alpha", testDeps);
+    expect(calls.filter((a) => a[0] === "remote").length).toBe(4);
+    expect(r3.remoto).toEqual(r1.remoto);
+
+    t = 30_001;
+    const r4 = await resolveRepo("Alpha", testDeps);
+    expect(calls.filter((a) => a[0] === "remote").length).toBe(6);
+    expect(r4.remoto).toEqual(r1.remoto);
+  });
+
+  it("caches negative remote hits (repository without remotes)", async () => {
+    const calls: string[][] = [];
+    const spy: GitRunner = (cwd, args, o) => {
+      calls.push(args);
+      return git(cwd, args, o);
+    };
+    const cache = createRemoteCache(30_000);
+    const testDeps: RepoResolverDeps = { ...deps, git: spy, remoteCache: cache };
+
+    const r1 = await resolveRepo(repoB, testDeps);
+    expect(r1.remoto).toBeUndefined();
+    expect(calls.filter((a) => a[0] === "remote").length).toBe(1);
+
+    const r2 = await resolveRepo(repoB, testDeps);
+    expect(r2.remoto).toBeUndefined();
+    expect(calls.filter((a) => a[0] === "remote").length).toBe(1);
+  });
+
+  it("without remoteCache every resolution executes git remote", async () => {
+    const calls: string[][] = [];
+    const spy: GitRunner = (cwd, args, o) => {
+      calls.push(args);
+      return git(cwd, args, o);
+    };
+    const testDeps: RepoResolverDeps = { ...deps, git: spy };
+
+    await resolveRepo("Alpha", testDeps);
+    expect(calls.filter((a) => a[0] === "remote").length).toBe(2);
+
+    await resolveRepo("Alpha", testDeps);
+    expect(calls.filter((a) => a[0] === "remote").length).toBe(4);
   });
 });

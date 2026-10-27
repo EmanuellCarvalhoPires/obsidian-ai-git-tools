@@ -269,8 +269,8 @@ export interface RepoCriado {
 
 /**
  * One repository on one provider. Every method throws `RemoteError` (see errors.ts) on failure and
- * never returns secrets. `mesclarPr` does NOT ask for approval: the tool checks the PR and the hook
- * of the core asks the user.
+ * never returns secrets. `mesclarPr` does NOT ask for approval: the tool checks the PR and
+ * the agent confirms with the user in the chat.
  */
 export interface GitProvider {
   readonly id: ProviderId;

@@ -1,5 +1,8 @@
 // Settings of the AI Git Tools plugin, saved in data.json as flat keys.
 
+import { DEV_EVENT_TYPES } from "./core/history/events";
+import type { DevEventType } from "./core/history/events";
+
 export interface Settings {
   /** Vault folder with one folder per development project. */
   projectsRoot: string;
@@ -23,6 +26,8 @@ export interface Settings {
   remoteIntervalMin: number;
   /** Last project chosen in the module screen. */
   lastProject: string;
+  /** Kinds of event that become notes. The default leaves out commit and push, which are the bulk of the notes. */
+  eventTypes: DevEventType[];
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -37,6 +42,7 @@ export const DEFAULT_SETTINGS: Settings = {
   remotePolling: true,
   remoteIntervalMin: 30,
   lastProject: "",
+  eventTypes: ["pr", "deploy", "branch"],
 };
 
 /** Fills the missing or invalid keys of the saved data with the defaults. */
@@ -57,5 +63,6 @@ export function normalizeSettings(raw: unknown): Settings {
     remotePolling: flag(r.remotePolling, d.remotePolling),
     remoteIntervalMin: typeof r.remoteIntervalMin === "number" && r.remoteIntervalMin > 0 ? r.remoteIntervalMin : d.remoteIntervalMin,
     lastProject: text(r.lastProject, d.lastProject),
+    eventTypes: Array.isArray(r.eventTypes) ? DEV_EVENT_TYPES.filter((type) => (r.eventTypes as unknown[]).includes(type)) : [...d.eventTypes],
   };
 }

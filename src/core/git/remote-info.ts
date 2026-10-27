@@ -1,4 +1,4 @@
-// git_remote_info: the remotes of a repository, the provider behind them and whether a secret is
+// git_status with remoto=true: the remotes of a repository, the provider behind them and whether a secret is
 // configured for it. Never returns a secret value, and every URL has its credentials masked.
 import { maskCredentials } from "../git-runner";
 import type { GitRunner } from "../ports";

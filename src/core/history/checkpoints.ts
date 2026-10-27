@@ -64,6 +64,22 @@ export function createFileStorage(adapter: FileAdapter, path: string): Checkpoin
   };
 }
 
+export const MAX_COMMIT_PUSH_ENTRIES = 200;
+
+/**
+ * Keeps the newest `max` entries whose id starts with "commit-" or "push-" (the bulk of the notes) and every other entry.
+ * Insertion order is the age order: the ids are not integer-like, so the object keeps it. Dropping an old entry is safe:
+ * the sync only looks at new commits and `recordNow` finds a note by `evento_id` in the vault when the id is unknown.
+ */
+export function pruneDevEvents(events: Record<string, string>, max: number = MAX_COMMIT_PUSH_ENTRIES): Record<string, string> {
+  const volatile = Object.keys(events).filter((id) => id.startsWith("commit-") || id.startsWith("push-"));
+  if (volatile.length <= max) return events;
+  const drop = new Set(volatile.slice(0, volatile.length - max));
+  const kept: Record<string, string> = {};
+  for (const [id, path] of Object.entries(events)) if (!drop.has(id)) kept[id] = path;
+  return kept;
+}
+
 const SAVE_DELAY_MS = 500;
 
 export class CheckpointStore {
@@ -109,13 +125,19 @@ export class CheckpointStore {
   async flush(): Promise<void> {
     if (this.saveTimer !== undefined) window.clearTimeout(this.saveTimer);
     this.saveTimer = undefined;
+    this.prune();
     await this.storage.save(this.data);
+  }
+
+  private prune(): void {
+    this.data.devEvents = pruneDevEvents(this.data.devEvents);
   }
 
   private scheduleSave(): void {
     if (this.saveTimer !== undefined) return;
     this.saveTimer = window.setTimeout(() => {
       this.saveTimer = undefined;
+      this.prune();
       void this.storage.save(this.data).catch(() => undefined);
     }, SAVE_DELAY_MS);
   }

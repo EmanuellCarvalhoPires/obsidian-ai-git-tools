@@ -4,9 +4,9 @@
 // a secret for the provider the tool answers `secret_nao_configurada` before any network call, and
 // the local git tools keep working (decision D6).
 //
-// `git_pr_merge` has no prompt of its own: the `aprovacao` hook of the AI Ecosystem asks the user
-// ("Posso fazer o merge do PR #N para a branch XYZ?") before the tool runs. What the tool adds is
-// the check that `destino` and `titulo` (the values the user approved) are the ones of the real PR.
+// `git_pr_merge` has no prompt and no approval hook (waived on purpose since 0.3.0): the agent
+// confirms the merge with the user in the chat before calling it. What the tool adds is the check that
+// `destino` and `titulo` (the values the user confirmed) are the ones of the real PR.
 //
 // This file is imported by git-tools.ts (GIT_TOOL_FACTORIES) and imports helpers from it; nothing
 // here uses those helpers while the module loads, so the import cycle is harmless.
@@ -47,7 +47,6 @@ import {
   GIT_PR_LISTAR_SCHEMA,
   GIT_PR_MERGE_SCHEMA,
   GIT_PR_OBTER_SCHEMA,
-  GIT_RELEASE_ANEXAR_SCHEMA,
   GIT_RELEASE_CRIAR_SCHEMA,
   GIT_REPO_CRIAR_SCHEMA,
 } from "./schemas";
@@ -56,10 +55,6 @@ import {
 const READ_REMOTE: ToolAnnotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true };
 const WRITE_PROVIDER: ToolAnnotations = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true };
 const MERGE_ANNOTATIONS: ToolAnnotations = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true };
-
-/** Closing sentence of every description: where the operations that are not tools can be done. */
-const FORA_DA_LISTA_TEXTO =
-  " Operações do provedor que não existem como tool (ex.: editar ou reabrir um PR) ficam fora daqui: no Bitbucket use search_vault_tools + run_vault_tool; no GitHub use http_request com Authorization {{bearer:NOME}} em api.github.com.";
 
 const DEFAULT_PR_LIMIT = 20;
 const MAX_PR_LIMIT = 100;
@@ -98,7 +93,7 @@ async function useProvider(ctx: RepoToolContext): Promise<ProviderUse> {
     throw new RemoteError(
       "argumento_invalido",
       `Não dá para falar com um provedor: as tools de PR e de pipeline só funcionam em repositórios do GitHub ou do Bitbucket.${where}`,
-      { dica: "Confira os remotos com git_remote_info." },
+      { dica: "Confira os remotos com git_status (remoto=true)." },
     );
   }
   const settings = deps.settings();
@@ -193,6 +188,23 @@ async function readAtivos(root: string, arquivos: string[]): Promise<ReleaseAtiv
   return ativos;
 }
 
+async function anexarArquivos(ctx: RepoToolContext, tag: string, ativos: ReleaseAtivo[]): Promise<HubToolResult> {
+  return withProvider(ctx, async (use) => {
+    if (!use.provider.anexarRelease) {
+      return fail("argumento_invalido", "Só o GitHub tem releases pela API. No Bitbucket a versão é a tag.", "Use a tag e os arquivos pela página do Bitbucket ou pelo fluxo da branch.");
+    }
+    const rel = await use.provider.anexarRelease({ tag, ativos });
+    return ok(`${rel.ativos.length} arquivo(s) anexado(s) à release ${rel.tag}: ${rel.ativos.join(", ")}${rel.url !== "" ? `\n${rel.url}` : ""}`, {
+      repo: ctx.repo.root,
+      provedor: use.ref.provider,
+      id: rel.id,
+      tag: rel.tag,
+      url: rel.url,
+      arquivos: rel.ativos,
+    });
+  });
+}
+
 const REMOTE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 // ---------------------------------------------------------------------------
@@ -221,7 +233,7 @@ const ESTADOS: ReadonlyArray<PrEstado | "todos"> = ["aberto", "mesclado", "fecha
 const ESTRATEGIAS: ReadonlyArray<EstrategiaMerge> = ["merge", "squash", "fast_forward"];
 const INCLUIR: ReadonlyArray<PrIncluir> = ["commits", "diff", "comentarios"];
 
-function prData(pr: PrInfo): Record<string, unknown> {
+function prData(pr: PrInfo, resumido = false): Record<string, unknown> {
   return {
     numero: pr.numero,
     titulo: pr.titulo,
@@ -231,8 +243,8 @@ function prData(pr: PrInfo): Record<string, unknown> {
     url: pr.url,
     autor: pr.autor,
     criado_em: pr.criadoEm,
-    ...(pr.descricao !== undefined ? { descricao: pr.descricao } : {}),
-    ...(pr.headSha !== undefined ? { head_sha: pr.headSha } : {}),
+    ...(!resumido && pr.descricao !== undefined ? { descricao: pr.descricao } : {}),
+    ...(!resumido && pr.headSha !== undefined ? { head_sha: pr.headSha } : {}),
   };
 }
 
@@ -290,8 +302,7 @@ export function buildProviderTools(deps: GitToolDeps): HubTool[] {
       name: "git_pr_criar",
       title: "Abrir pull request",
       description:
-        "Abre um pull request no GitHub ou no Bitbucket (escolhido pelo remoto do repositório) da branch origem para a branch destino. Confere com git ls-remote que a origem já está no remoto (se não estiver, recusa e manda usar git_push com definir_upstream). Avisa, sem bloquear, quando o destino foge da hierarquia do gitflow (feature, bugfix e chore para develop; develop para main; hotfix para main ou develop). No Bitbucket a branch de origem nunca é apagada no merge. Precisa de uma secret do provedor configurada." +
-        FORA_DA_LISTA_TEXTO,
+        "Abre um pull request no GitHub ou no Bitbucket (escolhido pelo remoto do repositório) da branch origem para a branch destino. Confere com git ls-remote que a origem já está no remoto (se não estiver, recusa e manda usar git_push com definir_upstream). Avisa, sem bloquear, quando o destino foge da hierarquia do gitflow (feature, bugfix e chore para develop; develop para main; hotfix para main ou develop). No Bitbucket a branch de origem nunca é apagada no merge. Precisa de uma secret do provedor configurada.",
       inputSchema: GIT_PR_CRIAR_SCHEMA,
       annotations: WRITE_PROVIDER,
       async run(ctx, args) {
@@ -343,8 +354,7 @@ export function buildProviderTools(deps: GitToolDeps): HubTool[] {
       name: "git_pr_listar",
       title: "Listar pull requests",
       description:
-        "Lista os pull requests do repositório no GitHub ou no Bitbucket, com filtro por estado (aberto, mesclado, fechado, todos; padrão aberto), branch de origem e de destino. Padrão 20 PRs, máximo 100; diz quando há mais. Só lê. Precisa de uma secret do provedor configurada." +
-        FORA_DA_LISTA_TEXTO,
+        "Lista os pull requests do repositório no GitHub ou no Bitbucket, com filtro por estado (aberto, mesclado, fechado, todos; padrão aberto), branch de origem e de destino. Padrão 20 PRs, máximo 100; diz quando há mais. A lista não traz a descrição dos PRs; use git_pr_obter para ler um. Só lê. Precisa de uma secret do provedor configurada.",
       inputSchema: GIT_PR_LISTAR_SCHEMA,
       annotations: READ_REMOTE,
       async run(ctx, args) {
@@ -368,7 +378,7 @@ export function buildProviderTools(deps: GitToolDeps): HubTool[] {
             repo: ctx.repo.root,
             provedor: use.ref.provider,
             estado,
-            prs: res.itens.map(prData),
+            prs: res.itens.map((p) => prData(p, true)),
             total: res.itens.length,
             truncado: res.truncado,
           });
@@ -380,8 +390,7 @@ export function buildProviderTools(deps: GitToolDeps): HubTool[] {
       name: "git_pr_obter",
       title: "Ver um pull request",
       description:
-        "Mostra um pull request (título, estado, origem, destino, autor, URL, descrição) e, com incluir, os commits, o diff (cortado em max_bytes_diff, padrão 200000) e os comentários. Só lê. Precisa de uma secret do provedor configurada." +
-        FORA_DA_LISTA_TEXTO,
+        "Mostra um pull request (título, estado, origem, destino, autor, URL, descrição) e, com incluir, os commits, o diff (cortado em max_bytes_diff, padrão 200000) e os comentários. Só lê. Precisa de uma secret do provedor configurada.",
       inputSchema: GIT_PR_OBTER_SCHEMA,
       annotations: READ_REMOTE,
       async run(ctx, args) {
@@ -425,8 +434,7 @@ export function buildProviderTools(deps: GitToolDeps): HubTool[] {
       name: "git_pr_comentar",
       title: "Comentar um pull request",
       description:
-        "Publica um comentário (Markdown) em um pull request. Escreve no provedor, mas não altera código nem o estado do PR. Precisa de uma secret do provedor configurada." +
-        FORA_DA_LISTA_TEXTO,
+        "Publica um comentário (Markdown) em um pull request. Escreve no provedor, mas não altera código nem o estado do PR. Precisa de uma secret do provedor configurada.",
       inputSchema: GIT_PR_COMENTAR_SCHEMA,
       annotations: WRITE_PROVIDER,
       async run(ctx, args) {
@@ -451,8 +459,7 @@ export function buildProviderTools(deps: GitToolDeps): HubTool[] {
       name: "git_pr_merge",
       title: "Mesclar pull request",
       description:
-        "Mescla um pull request aberto. Esta tool pede aprovação do usuário antes de rodar (o hook de aprovação do AI Ecosystem pergunta 'Posso fazer o merge do PR #N para a branch XYZ?', no PC e no Telegram); nunca tente contornar. Informe numero, destino e titulo exatamente como estão no PR: a tool lê o PR, exige que esteja aberto e compara destino e titulo com os reais; se divergirem, recusa com aprovacao_divergente e nada é mesclado. A branch de origem nunca é apagada. estrategia: merge, squash ou fast_forward (só no Bitbucket). No Bitbucket o merge pode ser assíncrono: a tool espera até 30 s e, se ainda não terminou, avisa com merge_em_andamento. Precisa de uma secret do provedor configurada." +
-        FORA_DA_LISTA_TEXTO,
+        "Mescla um pull request aberto. Não há hook de aprovação: o merge roda assim que a tool é chamada. Antes de chamar, pergunte ao usuário no chat ('Posso fazer o merge do PR #N para a branch XYZ?') e só chame depois de um sim explícito àquele PR. Informe numero, destino e titulo exatamente como estão no PR: a tool lê o PR, exige que esteja aberto e compara destino e titulo com os reais; se divergirem, recusa com aprovacao_divergente e nada é mesclado. A branch de origem nunca é apagada. estrategia: merge, squash ou fast_forward (só no Bitbucket). No Bitbucket o merge pode ser assíncrono: a tool espera até 30 s e, se ainda não terminou, avisa com merge_em_andamento. Precisa de uma secret do provedor configurada.",
       inputSchema: GIT_PR_MERGE_SCHEMA,
       annotations: MERGE_ANNOTATIONS,
       async run(ctx, args) {
@@ -501,8 +508,7 @@ export function buildProviderTools(deps: GitToolDeps): HubTool[] {
       name: "git_pipeline_status",
       title: "Estado dos pipelines",
       description:
-        "Mostra os pipelines mais recentes (Bitbucket Pipelines ou GitHub Actions) com estado normalizado (pendente, executando, sucesso, falha, parado), os steps e o link. Filtra por branch, commit ou PR; sem filtro usa a branch atual. Padrão 5, máximo 20. O log dos steps não é lido. Só lê. Precisa de uma secret do provedor configurada." +
-        FORA_DA_LISTA_TEXTO,
+        "Mostra os pipelines mais recentes (Bitbucket Pipelines ou GitHub Actions) com estado normalizado (pendente, executando, sucesso, falha, parado), os steps e o link. Filtra por branch, commit ou PR; sem filtro usa a branch atual. Padrão 5, máximo 20. O log dos steps não é lido. Só lê. Precisa de uma secret do provedor configurada.",
       inputSchema: GIT_PIPELINE_STATUS_SCHEMA,
       annotations: READ_REMOTE,
       async run(ctx, args) {
@@ -542,8 +548,7 @@ export function buildProviderTools(deps: GitToolDeps): HubTool[] {
       name: "git_repo_criar",
       title: "Criar repositório no GitHub",
       description:
-        "Cria um repositório novo (vazio) no GitHub, do usuário da secret ou de uma organização (dono). Publica algo na internet: confirme com o usuário o nome, o dono e se é privado ou público (privado é obrigatório, sem padrão) ANTES de chamar. Se repo for informado (projeto ou caminho de um clone local), adiciona o remoto novo a ele (git remote add, padrão origin); não envia nada: o envio do código é git_push. Recusa-se a trocar um remoto que já existe. Só GitHub; no Bitbucket crie o repositório pela página do provedor. Precisa de uma secret do GitHub configurada, com permissão de criar repositórios." +
-        FORA_DA_LISTA_TEXTO,
+        "Cria um repositório novo (vazio) no GitHub, do usuário da secret ou de uma organização (dono). Publica algo na internet: confirme com o usuário o nome, o dono e se é privado ou público (privado é obrigatório, sem padrão) ANTES de chamar. Se repo for informado (projeto ou caminho de um clone local), adiciona o remoto novo a ele (git remote add, padrão origin); não envia nada: o envio do código é git_push. Recusa-se a trocar um remoto que já existe. Só GitHub; no Bitbucket crie o repositório pela página do provedor. Precisa de uma secret do GitHub configurada, com permissão de criar repositórios.",
       inputSchema: GIT_REPO_CRIAR_SCHEMA,
       annotations: WRITE_PROVIDER,
       async run({ deps: d, git }, args) {
@@ -560,13 +565,13 @@ export function buildProviderTools(deps: GitToolDeps): HubTool[] {
         const local =
           repoInput === undefined
             ? undefined
-            : await resolveRepo(repoInput, { git, projects: d.projects, allowedFolders: d.allowedFolders, allowAnyFolder: d.allowAnyFolder });
+            : await resolveRepo(repoInput, { git, projects: d.projects, allowedFolders: d.allowedFolders, allowAnyFolder: d.allowAnyFolder, remoteCache: d.remoteCache });
         let jaTem = false;
         if (local) {
           const remotos = (await git(local.root, ["remote"])).split(/\r?\n/).map((s) => s.trim());
           jaTem = remotos.includes(nomeRemoto);
           if (jaTem) {
-            return fail("argumento_invalido", `O repositório local já tem o remoto "${nomeRemoto}": nada foi criado no GitHub.`, "Use outro nome_remoto ou confira com git_remote_info.");
+            return fail("argumento_invalido", `O repositório local já tem o remoto "${nomeRemoto}": nada foi criado no GitHub.`, "Use outro nome_remoto ou confira com git_status (remoto=true).");
           }
         }
 
@@ -583,6 +588,7 @@ export function buildProviderTools(deps: GitToolDeps): HubTool[] {
         if (local) {
           try {
             await git(local.root, ["remote", "add", nomeRemoto, criado.cloneUrl]);
+            d.remoteCache?.forget(local.root);
             remotoAdicionado = true;
           } catch (err) {
             const motivo = err instanceof Error ? err.message : String(err);
@@ -609,13 +615,19 @@ export function buildProviderTools(deps: GitToolDeps): HubTool[] {
       name: "git_release_criar",
       title: "Publicar release no GitHub",
       description:
-        "Publica uma release no GitHub para a tag informada. Se a tag ainda não existe no remoto, o GitHub a cria em alvo (padrão: a branch padrão), então envie antes o commit com git_push. Sem notas, o GitHub gera as notas dos PRs (gerar_notas). Em arquivos, anexa arquivos de texto do clone (para um plugin do Obsidian: main.js, manifest.json e styles.css, depois do build); o token precisa permitir o host uploads.github.com. Recusa uma tag que já tem release. Publica algo visível ao público: confirme com o usuário a versão e o repositório ANTES de chamar. Só GitHub; no Bitbucket use git_tag e git_push. Precisa de uma secret do GitHub com permissão de escrita em conteúdo." +
-        FORA_DA_LISTA_TEXTO,
+        "Publica uma release no GitHub para a tag informada. Se a tag ainda não existe no remoto, o GitHub a cria em alvo (padrão: a branch padrão), então envie antes o commit com git_push. Sem notas, o GitHub gera as notas dos PRs (gerar_notas). Em arquivos, anexa arquivos de texto do clone (para um plugin do Obsidian: main.js, manifest.json e styles.css, depois do build); o token precisa permitir o host uploads.github.com. Com anexar_apenas=true não cria nada: só anexa os arquivos a uma release que já existe (para quando a release foi criada sem arquivos). Recusa uma tag que já tem release. Publica algo visível ao público: confirme com o usuário a versão e o repositório ANTES de chamar. Só GitHub; no Bitbucket use git_tag e git_push. Precisa de uma secret do GitHub com permissão de escrita em conteúdo.",
       inputSchema: GIT_RELEASE_CRIAR_SCHEMA,
       annotations: WRITE_PROVIDER,
       async run(ctx, args) {
         const tag = reqString(args, "tag").trim();
         await assertRefName(tag, { git: ctx.git, cwd: ctx.repo.root });
+        if (optBool(args, "anexar_apenas") === true) {
+          const extras = ["titulo", "notas", "alvo", "gerar_notas", "rascunho", "prerelease"].filter((k) => args[k] !== undefined && args[k] !== null);
+          if (extras.length > 0) throw new GuardError(`Com anexar_apenas=true não use ${extras.join(", ")}: a release já existe e só ganha arquivos.`);
+          const ativosExistentes = await readAtivos(ctx.repo.root, optStringList(args, "arquivos") ?? []);
+          if (ativosExistentes.length === 0) throw new GuardError('"arquivos" tem de ter pelo menos um arquivo com anexar_apenas=true.');
+          return anexarArquivos(ctx, tag, ativosExistentes);
+        }
         const titulo = optString(args, "titulo");
         const notas = optString(args, "notas");
         const alvo = optString(args, "alvo");
@@ -653,33 +665,5 @@ export function buildProviderTools(deps: GitToolDeps): HubTool[] {
         });
       },
     }),
-    defineRepoTool(deps, {
-      name: "git_release_anexar",
-      title: "Anexar arquivos a uma release",
-      description:
-        "Anexa arquivos de texto a uma release que já existe no GitHub (a tag precisa ter release), para quando a release foi criada sem arquivos. Os arquivos são lidos do clone local (ex.: main.js, manifest.json, styles.css, depois do build). Não cria release nem tag. Recusa um arquivo que não existe ou não é de texto. Publica algo visível ao público: confirme com o usuário a versão antes de chamar. Só GitHub. Precisa de uma secret do GitHub com permissão de escrita em conteúdo e o host uploads.github.com permitido." +
-        FORA_DA_LISTA_TEXTO,
-      inputSchema: GIT_RELEASE_ANEXAR_SCHEMA,
-      annotations: WRITE_PROVIDER,
-      async run(ctx, args) {
-        const tag = reqString(args, "tag").trim();
-        await assertRefName(tag, { git: ctx.git, cwd: ctx.repo.root });
-        const ativos = await readAtivos(ctx.repo.root, optStringList(args, "arquivos") ?? []);
-        if (ativos.length === 0) throw new GuardError('"arquivos" tem de ter pelo menos um arquivo.');
-        return withProvider(ctx, async (use) => {
-          if (!use.provider.anexarRelease) {
-            return fail("argumento_invalido", "Só o GitHub tem releases pela API. No Bitbucket a versão é a tag.", "Use a tag e os arquivos pela página do Bitbucket ou pelo fluxo da branch.");
-          }
-          const rel = await use.provider.anexarRelease({ tag, ativos });
-          return ok(`${rel.ativos.length} arquivo(s) anexado(s) à release ${rel.tag}: ${rel.ativos.join(", ")}${rel.url !== "" ? `\n${rel.url}` : ""}`, {
-            repo: ctx.repo.root,
-            provedor: use.ref.provider,
-            id: rel.id,
-            tag: rel.tag,
-            url: rel.url,
-            arquivos: rel.ativos,
-          });
-        });
-      },
-    }),  ];
+  ];
 }

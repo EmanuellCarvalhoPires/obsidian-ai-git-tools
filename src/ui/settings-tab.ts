@@ -4,6 +4,7 @@
 // area for the folder list).
 import { Notice, PluginSettingTab, Setting, debounce } from "obsidian";
 import type { App, Plugin } from "obsidian";
+import { DEV_EVENT_TYPES } from "../core/history/events";
 import type { SecretListing } from "../core/providers/secrets";
 import { t } from "../i18n";
 import { DEFAULT_SETTINGS } from "../types";
@@ -58,6 +59,7 @@ export class AiGitToolsSettingTab extends PluginSettingTab {
     this.renderFolders(containerEl);
     this.renderProviders(containerEl);
     this.renderAutomation(containerEl);
+    this.renderEventTypes(containerEl);
     this.renderHookNote(containerEl);
   }
 
@@ -201,6 +203,19 @@ export class AiGitToolsSettingTab extends PluginSettingTab {
               .finally(() => btn.setDisabled(false));
           }),
       );
+  }
+
+  private renderEventTypes(el: HTMLElement): void {
+    new Setting(el).setHeading().setName(t("settings.events.heading")).setDesc(t("settings.events.desc"));
+    const s = this.host.settings;
+    for (const type of DEV_EVENT_TYPES) {
+      new Setting(el).setName(t(`settings.eventType.${type}`)).addToggle((tg) =>
+        tg.setValue(s.eventTypes.includes(type)).onChange((on) => {
+          s.eventTypes = DEV_EVENT_TYPES.filter((x) => (x === type ? on : s.eventTypes.includes(x)));
+          void this.host.saveSettings();
+        }),
+      );
+    }
   }
 
   private renderHookNote(el: HTMLElement): void {

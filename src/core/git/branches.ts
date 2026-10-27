@@ -18,6 +18,8 @@ export interface BranchInfo {
   behind: number;
   /** The upstream branch no longer exists on the remote. */
   upstream_sumiu: boolean;
+  /** Only on remote-tracking entries: the branch no longer exists on the remote (seen by the live ls-remote). */
+  sumiu_do_remoto?: boolean;
   /** True for the branch checked out now. */
   atual: boolean;
   /** Date of the last commit, ISO 8601. */
@@ -108,6 +110,14 @@ export async function gitBranches(git: GitRunner, root: string, args: BranchesAr
   try {
     const heads = parseLsRemote(await git(root, ["ls-remote", "--heads", remoto], { timeoutMs: 30_000 }));
     result.remotoVivo = { remoto, ok: true, branches: heads };
+    const vivas = new Set(heads.map((h) => h.nome));
+    const prefixo = `${remoto}/`;
+    for (const b of result.remotas ?? []) {
+      if (b.nome.startsWith(prefixo) && !vivas.has(b.nome.slice(prefixo.length))) b.sumiu_do_remoto = true;
+    }
+    for (const b of result.locais) {
+      if (b.upstream !== undefined && b.upstream.startsWith(prefixo) && !vivas.has(b.upstream.slice(prefixo.length))) b.upstream_sumiu = true;
+    }
   } catch (err) {
     const erro = err instanceof GitError ? err.stderr || err.message : err instanceof Error ? err.message : String(err);
     result.remotoVivo = { remoto, ok: false, erro, branches: [] };

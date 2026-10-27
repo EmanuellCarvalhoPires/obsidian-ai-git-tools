@@ -28,7 +28,15 @@ const int = (description: string, minimum: number, maximum?: number): JsonSchema
 // Read tools
 // ---------------------------------------------------------------------------
 
-export const GIT_STATUS_SCHEMA = objectSchema({ repo: REPO_PROP }, ["repo"]);
+export const GIT_STATUS_SCHEMA = objectSchema(
+  {
+    repo: REPO_PROP,
+    remoto: bool(
+      "Inclui os remotos configurados (URLs sem credenciais), o provedor, o dono ou workspace, o slug, a branch padrão e se há secret do provedor (só sim ou não, nunca o valor).",
+    ),
+  },
+  ["repo"],
+);
 
 export const GIT_DIFF_SCHEMA = objectSchema(
   {
@@ -43,7 +51,7 @@ export const GIT_DIFF_SCHEMA = objectSchema(
     caminhos: { type: "array", items: { type: "string" }, description: "Limita o diff a estes caminhos relativos ao repositório." },
     stat: bool("Mostra só o resumo por arquivo (--stat), sem o conteúdo das linhas."),
     contexto: int("Linhas de contexto ao redor de cada trecho (-U). Padrão do git: 3.", 0, 1000),
-    max_bytes: int("Tamanho máximo do diff devolvido, em bytes (padrão 200000). Acima disso o texto é cortado e truncado=true.", 1, 5_000_000),
+    max_bytes: int("Tamanho máximo do diff devolvido, em bytes (padrão 40000). Acima disso o texto é cortado e truncado=true.", 1, 5_000_000),
   },
   ["repo", "alvo"],
 );
@@ -52,13 +60,14 @@ export const GIT_LOG_SCHEMA = objectSchema(
   {
     repo: REPO_PROP,
     ref: str("Branch, tag ou hash de onde ler o histórico. Padrão HEAD. Não use junto com intervalo."),
-    limite: int("Número máximo de commits (padrão 30, máximo 200).", 1, 200),
+    limite: int("Número máximo de commits (padrão 10, máximo 200).", 1, 200),
     desde: str("Só commits depois desta data (ex.: 2026-10-01 ou '2 weeks ago')."),
     ate: str("Só commits até esta data."),
     autor: str("Filtra pelo autor (nome ou e-mail, aceita parte do texto)."),
     caminho: str("Só commits que alteraram este caminho, relativo ao repositório."),
     intervalo: str("Intervalo de commits no formato a..b ou a...b. Não use junto com ref."),
     hash: str("Hash de um commit: devolve o commit completo (com corpo da mensagem) e as estatísticas de arquivos."),
+    completo: bool("Inclui no structuredContent o hash inteiro, o e-mail, os pais e a data completa (ISO) de cada commit. Padrão false: só hash_curto, data (AAAA-MM-DD), autor e assunto. Com hash o commit sai sempre completo."),
   },
   ["repo"],
 );
@@ -82,8 +91,6 @@ export const GIT_BRANCHES_SCHEMA = objectSchema(
   },
   ["repo"],
 );
-
-export const GIT_REMOTE_INFO_SCHEMA = objectSchema({ repo: REPO_PROP }, ["repo"]);
 
 // ---------------------------------------------------------------------------
 // Local write tools
@@ -325,21 +332,9 @@ export const GIT_RELEASE_CRIAR_SCHEMA = objectSchema(
       items: { type: "string" },
       description: "Arquivos de texto do repositório a anexar (ex.: main.js, manifest.json, styles.css), com caminho relativo à raiz. O token precisa permitir o host uploads.github.com.",
     },
+    anexar_apenas: bool("Não cria a release: anexa os arquivos a uma release que já existe para a tag (exige arquivos). Não combine com titulo, notas, alvo, gerar_notas, rascunho nem prerelease."),
   },
   ["repo", "tag"],
-);
-
-export const GIT_RELEASE_ANEXAR_SCHEMA = objectSchema(
-  {
-    repo: REPO_PROP,
-    tag: str("Tag da release que já existe no GitHub (ex.: 1.1.0)."),
-    arquivos: {
-      type: "array",
-      items: { type: "string" },
-      description: "Arquivos de texto do repositório a anexar, com caminho relativo à raiz (ex.: main.js, manifest.json, styles.css). O token precisa permitir o host uploads.github.com.",
-    },
-  },
-  ["repo", "tag", "arquivos"],
 );
 
 // ---------------------------------------------------------------------------
@@ -358,6 +353,13 @@ export const GIT_GRAPH_SCHEMA = objectSchema(
     branch: str("Branch (ou tag) a destacar no grafo."),
     hash: str("Commit (hash inteiro ou abreviado, 4 caracteres ou mais) a destacar no grafo."),
     limite: int("Número de commits desenhados, de todas as branches (padrão 60, máximo 500).", 1, 500),
+    formato: {
+      type: "string",
+      enum: ["texto", "arquivo", "svg"],
+      default: "texto",
+      description:
+        "texto (padrão): só as linhas dos commits, sem SVG. arquivo: grava o SVG em <pasta do projeto>/Anexos e devolve o caminho. svg: devolve o SVG inteiro na resposta (caro: ~7 mil caracteres com 8 commits).",
+    },
   },
   ["projeto"],
 );
@@ -385,6 +387,7 @@ export const GIT_REGISTRAR_EVENTO_SCHEMA = objectSchema(
     branch: str("Branch do evento."),
     hash: str("Commit do evento (hash inteiro ou abreviado)."),
     url: str("Link do evento (PR, pipeline, deploy)."),
+    numero: int("Número do PR no provedor. Só com tipo pr: usa o mesmo id da leitura do remoto (pr-<provedor>-<dono/repo>-<número>), então o PR não vira duas notas.", 1),
     estado: str("PR: open, merged ou declined. Deploy: sucesso, falha..."),
     ambiente: str("Ambiente do deploy (ex.: producao)."),
     detalhes: str("Texto em Markdown acrescentado abaixo da tabela da nota."),

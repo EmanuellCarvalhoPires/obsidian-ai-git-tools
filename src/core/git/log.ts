@@ -4,7 +4,7 @@ import { GuardError, assertPathspec, rejectForbiddenFlags } from "../guards";
 import type { GitRunner } from "../ports";
 import { assertRevision } from "./diff";
 
-export const LOG_DEFAULT_LIMIT = 30;
+export const LOG_DEFAULT_LIMIT = 10;
 export const LOG_MAX_LIMIT = 200;
 
 const FIELD = "\x1f";

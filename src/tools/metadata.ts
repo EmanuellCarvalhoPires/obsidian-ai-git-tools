@@ -11,7 +11,7 @@ export const GIT_TOOLS_APPROVAL = "dispensada";
 
 export const GIT_TOOL_METADATA: Record<string, HubToolMetadata> = {
   // ---------------------------------------------------------------------------
-  // git/leitura (status, diff, log, blame, branches, remote_info, graph)
+  // git/leitura (status, diff, log, blame, branches, graph)
   // ---------------------------------------------------------------------------
   git_status: {
     categoria: "git/leitura",
@@ -52,14 +52,6 @@ export const GIT_TOOL_METADATA: Record<string, HubToolMetadata> = {
     efeito: "leitura",
     exposicao: "indice",
     exemplo: { repo: "meu-projeto", remotas: true },
-  },
-  git_remote_info: {
-    categoria: "git/leitura",
-    tags: ["git", "remote", "remotos", "github", "bitbucket", "leitura"],
-    resumo: "Informações dos remotos configurados no repositório",
-    efeito: "leitura",
-    exposicao: "indice",
-    exemplo: { repo: "meu-projeto" },
   },
   git_graph: {
     categoria: "git/leitura",
@@ -165,7 +157,7 @@ export const GIT_TOOL_METADATA: Record<string, HubToolMetadata> = {
     categoria: "git/escrita",
     tags: ["git", "sync", "sincronizar", "historico", "eventos"],
     resumo: "Sincroniza histórico do repositório local e remoto no cofre",
-    efeito: "externo",
+    efeito: "cofre",
     exposicao: "indice",
     exemplo: { projeto: "meu-projeto", remoto: true },
   },
@@ -179,21 +171,21 @@ export const GIT_TOOL_METADATA: Record<string, HubToolMetadata> = {
     resumo: "Abre um novo pull request no GitHub ou Bitbucket",
     efeito: "externo",
     exposicao: "indice",
-    exemplo: { repo: "meu-projeto", titulo: "feat: nova tela", destino: "develop" },
+    exemplo: { repo: "meu-projeto", origem: "feature/nova-tela", destino: "develop", titulo: "feat: nova tela" },
   },
   git_pr_listar: {
     categoria: "git/pr",
-    tags: ["git", "pr", "pull-request", "listar", "github", "bitbucket"],
+    tags: ["git", "pr", "pull-request", "listar", "github", "bitbucket", "rede"],
     resumo: "Lista pull requests abertos, mesclados ou recusados",
-    efeito: "externo",
+    efeito: "leitura",
     exposicao: "indice",
-    exemplo: { repo: "meu-projeto", estado: "open" },
+    exemplo: { repo: "meu-projeto", estado: "aberto" },
   },
   git_pr_obter: {
     categoria: "git/pr",
-    tags: ["git", "pr", "pull-request", "detalhes", "comentarios", "commits"],
+    tags: ["git", "pr", "pull-request", "detalhes", "comentarios", "commits", "rede"],
     resumo: "Obtém detalhes completos de um pull request pelo número",
-    efeito: "externo",
+    efeito: "leitura",
     exposicao: "indice",
     exemplo: { repo: "meu-projeto", numero: 42 },
   },
@@ -211,19 +203,19 @@ export const GIT_TOOL_METADATA: Record<string, HubToolMetadata> = {
     resumo: "Faz o merge de um pull request aprovado",
     efeito: "externo",
     exposicao: "indice",
-    exemplo: { repo: "meu-projeto", numero: 42, destino: "develop" },
+    exemplo: { repo: "meu-projeto", numero: 42, destino: "develop", titulo: "feat: nova tela", estrategia: "squash" },
   },
   git_pipeline_status: {
     categoria: "git/pr",
-    tags: ["git", "pipeline", "ci", "status", "runs", "github", "bitbucket"],
+    tags: ["git", "pipeline", "ci", "status", "runs", "github", "bitbucket", "rede"],
     resumo: "Consulta status das execuções de pipeline e CI/CD",
-    efeito: "externo",
+    efeito: "leitura",
     exposicao: "indice",
     exemplo: { repo: "meu-projeto", limite: 5 },
   },
 
   // ---------------------------------------------------------------------------
-  // git/repo (criar, release_criar, release_anexar)
+  // git/repo (criar, release_criar)
   // ---------------------------------------------------------------------------
   git_repo_criar: {
     categoria: "git/repo",
@@ -240,14 +232,6 @@ export const GIT_TOOL_METADATA: Record<string, HubToolMetadata> = {
     efeito: "externo",
     exposicao: "indice",
     exemplo: { repo: "meu-projeto", tag: "1.0.0", titulo: "Versão 1.0.0" },
-  },
-  git_release_anexar: {
-    categoria: "git/repo",
-    tags: ["git", "release", "anexar", "arquivos", "github"],
-    resumo: "Anexa arquivos de distribuição a uma release existente no GitHub",
-    efeito: "externo",
-    exposicao: "indice",
-    exemplo: { repo: "meu-projeto", tag: "1.0.0", arquivos: ["main.js", "manifest.json"] },
   },
 
   // ---------------------------------------------------------------------------

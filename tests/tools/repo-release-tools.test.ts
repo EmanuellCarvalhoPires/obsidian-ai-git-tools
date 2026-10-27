@@ -9,6 +9,8 @@ import { FAKE_VALUE, makeFakeSecrets, reply } from "../helpers/fake-secrets";
 import type { FakeSecrets } from "../helpers/fake-secrets";
 import { cleanupTemp, makeRepo, makeTempDir, sh } from "../helpers/git-repos";
 import { callTool, dataOf, makeDeps, textOf } from "../helpers/tool-deps";
+import { createRemoteCache } from "../../src/core/repo-resolver";
+import type { RemoteCache } from "../../src/core/repo-resolver";
 
 afterAll(() => cleanupTemp());
 
@@ -40,7 +42,7 @@ interface Env {
   fake: FakeSecrets;
 }
 
-function makeEnv(routes: Route[], opts: { remote?: string; secretGithub?: string } = {}): Env {
+function makeEnv(routes: Route[], opts: { remote?: string; secretGithub?: string; remoteCache?: RemoteCache } = {}): Env {
   const base = makeTempDir();
   const repo = makeRepo(base);
   if (opts.remote !== undefined) sh(repo, "remote", "add", "origin", opts.remote);
@@ -50,6 +52,7 @@ function makeEnv(routes: Route[], opts: { remote?: string; secretGithub?: string
     getSecrets: fake.getSecrets,
     redact: (t) => fake.service.redact(t),
     settings: { secretGithub: opts.secretGithub ?? "GH_TESTE", secretBitbucket: "BB_TESTE" },
+    remoteCache: opts.remoteCache,
   });
   return { base, repo, tools: buildGitTools(deps), fake };
 }
@@ -124,6 +127,21 @@ describe("git_repo_criar", () => {
     expect(dataOf(await callTool(env.tools, "git_repo_criar", { nome: "novo", privado: true, repo: env.repo, nome_remoto: "-x" })).codigo).toBe("argumento_invalido");
     expect(sent(env.fake)).toHaveLength(0);
   });
+
+  it("caches negative remote on clone without remote and invalidates cache when remote is added", async () => {
+    const cache = createRemoteCache();
+    const env = makeEnv([me, on("POST", "/user/repos", reply(201, repoCreated()))], { remoteCache: cache });
+    await callTool(env.tools, "git_status", { repo: env.repo });
+    expect(cache.get(env.repo)).toBeNull();
+
+    const res = await callTool(env.tools, "git_repo_criar", { nome: "novo", privado: false, repo: env.repo });
+    expect(res.isError).toBeUndefined();
+    expect(sh(env.repo, "remote", "get-url", "origin").trim()).toBe("https://github.com/o/novo.git");
+    expect(cache.get(env.repo)).toBeUndefined();
+
+    await callTool(env.tools, "git_status", { repo: env.repo });
+    expect(cache.get(env.repo)).toMatchObject({ nome: "origin" });
+  });
 });
 
 describe("git_release_criar", () => {
@@ -179,5 +197,47 @@ describe("git_release_criar", () => {
     const res = await callTool(semRemoto.tools, "git_release_criar", { repo: semRemoto.repo, tag: "1.1.0" });
     expect(dataOf(res).codigo).toBe("argumento_invalido");
     expect(textOf(res)).toContain("remoto");
+  });
+
+  it("attaches files to an existing release with anexar_apenas", async () => {
+    const env = makeEnv(
+      [
+        on("GET", "/repos/o/r/releases/tags/1.1.0", reply(200, { id: 7, tag_name: "1.1.0", name: "1.1.0", html_url: "https://github.com/o/r/releases/tag/1.1.0", draft: false, prerelease: false })),
+        on("POST", "/repos/o/r/releases/7/assets", reply(201, { id: 1 })),
+      ],
+      { remote: GH_REMOTE },
+    );
+    writeFileSync(join(env.repo, "main.js"), "console.log(1)");
+    const res = await callTool(env.tools, "git_release_criar", { repo: env.repo, tag: "1.1.0", anexar_apenas: true, arquivos: ["main.js"] });
+    expect(res.isError).toBeUndefined();
+    expect(dataOf(res).arquivos).toEqual(["main.js"]);
+    const postReleases = sent(env.fake).filter((c) => c.method === "POST" && new URL(c.url).pathname === "/repos/o/r/releases");
+    expect(postReleases).toHaveLength(0);
+  });
+
+  it("refuses anexar_apenas combined with titulo", async () => {
+    const env = makeEnv([], { remote: GH_REMOTE });
+    const res = await callTool(env.tools, "git_release_criar", { repo: env.repo, tag: "1.1.0", anexar_apenas: true, titulo: "v1.1.0", arquivos: ["main.js"] });
+    expect(res.isError).toBe(true);
+    expect(dataOf(res).codigo).toBe("argumento_invalido");
+    expect(sent(env.fake)).toHaveLength(0);
+  });
+
+  it("refuses anexar_apenas without arquivos", async () => {
+    const env = makeEnv([], { remote: GH_REMOTE });
+    const res = await callTool(env.tools, "git_release_criar", { repo: env.repo, tag: "1.1.0", anexar_apenas: true });
+    expect(res.isError).toBe(true);
+    expect(dataOf(res).codigo).toBe("argumento_invalido");
+  });
+
+  it("fails with provedor_http_404 when the tag has no release", async () => {
+    const env = makeEnv(
+      [on("GET", "/repos/o/r/releases/tags/1.1.0", reply(404, { message: "Not Found" }))],
+      { remote: GH_REMOTE },
+    );
+    writeFileSync(join(env.repo, "main.js"), "console.log(1)");
+    const res = await callTool(env.tools, "git_release_criar", { repo: env.repo, tag: "1.1.0", anexar_apenas: true, arquivos: ["main.js"] });
+    expect(res.isError).toBe(true);
+    expect(dataOf(res).codigo).toBe("provedor_http_404");
   });
 });

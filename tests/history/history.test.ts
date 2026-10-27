@@ -1,12 +1,15 @@
+import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { CheckpointStore } from "../../src/core/history/checkpoints";
 import { branchId, commitId, parseGraphBlock, prId, pushId, renderEventNote } from "../../src/core/history/events";
+import type { DevEventType } from "../../src/core/history/events";
 import { HistoryService } from "../../src/core/history/history-service";
 import { LOG_FORMAT, layout, parseLog, toSvg } from "../../src/core/history/graph";
 import { createNodeGit } from "../../src/core/git-runner";
 import type { ProjectInfo } from "../../src/core/ports";
-import { cleanupTemp, makeBareRemote, makeRepo, sh, writeFile } from "../helpers/git-repos";
+import { cleanupTemp, makeBareRemote, makeRepo, makeTempDir, sh, writeFile } from "../helpers/git-repos";
 import { MemoryVault } from "../helpers/memory-ports";
+import { configureClone } from "../helpers/spy-git";
 
 afterAll(cleanupTemp);
 
@@ -17,10 +20,10 @@ function commit(dir: string, file: string, message: string): string {
   return sh(dir, "rev-parse", "HEAD").trim();
 }
 
-function harness(clone: string | undefined) {
+function harness(clone: string | undefined, eventTypes?: DevEventType[]) {
   const vault = new MemoryVault();
   const store = new CheckpointStore({ load: async () => undefined, save: async () => undefined });
-  const history = new HistoryService(createNodeGit(), vault, store, () => ({ eventsFolder: "Eventos" }));
+  const history = new HistoryService(createNodeGit(), vault, store, () => ({ eventsFolder: "Eventos", ...(eventTypes ? { eventTypes } : {}) }));
   const project: ProjectInfo = { name: "App", folder: "Projetos/App", clonePath: clone };
   return { vault, store, history, project };
 }
@@ -128,6 +131,61 @@ describe("history sync", () => {
     expect(body).toContain("Commits enviados");
     expect(body).toContain('evento_id: "push-origin/main-');
   });
+
+  it("fetch and pull do not become push notes, but a real push does", async () => {
+    const dir = makeRepo();
+    const bare = makeBareRemote();
+    sh(dir, "remote", "add", "origin", bare);
+    sh(dir, "push", "-q", "-u", "origin", "main");
+    const h = harness(dir);
+    await h.history.sync(h.project);
+
+    const base = makeTempDir();
+    const outro = join(base, "outro");
+    sh(base, "clone", "-q", bare, outro);
+    configureClone(sh, outro);
+
+    commit(outro, "remoto.txt", "pelo outro clone");
+    sh(outro, "push", "-q");
+
+    sh(dir, "fetch", "-q");
+    await h.history.sync(h.project);
+    expect(eventNotes(h.vault, "Push main")).toHaveLength(0);
+
+    sh(dir, "merge", "-q", "--ff-only", "origin/main");
+    await h.history.sync(h.project);
+    expect(eventNotes(h.vault, "Push main")).toHaveLength(0);
+
+    commit(dir, "local.txt", "feito localmente");
+    sh(dir, "push", "-q");
+    await h.history.sync(h.project);
+    expect(eventNotes(h.vault, "Push main")).toHaveLength(1);
+  });
+
+  it("records a push even when a fetch happened earlier in the same sync window", async () => {
+    const dir = makeRepo();
+    const bare = makeBareRemote();
+    sh(dir, "remote", "add", "origin", bare);
+    sh(dir, "push", "-q", "-u", "origin", "main");
+    const h = harness(dir);
+    await h.history.sync(h.project);
+
+    const base = makeTempDir();
+    const outro = join(base, "outro");
+    sh(base, "clone", "-q", bare, outro);
+    configureClone(sh, outro);
+
+    commit(outro, "remoto.txt", "pelo outro clone");
+    sh(outro, "push", "-q");
+
+    sh(dir, "fetch", "-q");
+    sh(dir, "merge", "-q", "--ff-only", "origin/main");
+    commit(dir, "local.txt", "feito localmente");
+    sh(dir, "push", "-q");
+
+    await h.history.sync(h.project);
+    expect(eventNotes(h.vault, "Push main")).toHaveLength(1);
+  });
 });
 
 describe("history record and deduplication", () => {
@@ -216,6 +274,72 @@ describe("history record and deduplication", () => {
   });
 });
 
+describe("event types", () => {
+  it("with ['pr']: baseline, 2 commits and a push creates neither commit notes nor push notes", async () => {
+    const dir = makeRepo();
+    const bare = makeBareRemote();
+    sh(dir, "remote", "add", "origin", bare);
+    sh(dir, "push", "-q", "-u", "origin", "main");
+    const h = harness(dir, ["pr"]);
+    await h.history.sync(h.project);
+    commit(dir, "b", "c1");
+    commit(dir, "c", "c2");
+    sh(dir, "push", "-q");
+    await h.history.sync(h.project);
+    expect(eventNotes(h.vault, "Commit ")).toHaveLength(0);
+    expect(eventNotes(h.vault, "Push ")).toHaveLength(0);
+  });
+
+  it("with ['commit']: 1 commit creates commit note and no push note", async () => {
+    const dir = makeRepo();
+    const bare = makeBareRemote();
+    sh(dir, "remote", "add", "origin", bare);
+    sh(dir, "push", "-q", "-u", "origin", "main");
+    const h = harness(dir, ["commit"]);
+    await h.history.sync(h.project);
+    commit(dir, "b", "c1");
+    sh(dir, "push", "-q");
+    await h.history.sync(h.project);
+    expect(eventNotes(h.vault, "Commit ")).toHaveLength(1);
+    expect(eventNotes(h.vault, "Push ")).toHaveLength(0);
+  });
+
+  it("record with commit event and ['pr'] ignores unless forced", async () => {
+    const h = harness(undefined, ["pr"]);
+    const ev = { tipo: "commit" as const, projeto: "App", id: commitId("c".repeat(40)), titulo: "commit manual", data: new Date(0) };
+    const res = await h.history.record(h.project, ev);
+    expect(res).toEqual({ path: "", created: false, ignorado: true });
+    expect(h.vault.notes.size).toBe(0);
+
+    const forced = await h.history.record(h.project, ev, { forcar: true });
+    expect(forced.created).toBe(true);
+    expect(forced.ignorado).toBeUndefined();
+    expect(h.vault.notes.size).toBeGreaterThan(0);
+  });
+
+  it("recordRemote with deploy event and ['pr'] returns ignorado: true", async () => {
+    const h = harness(undefined, ["pr"]);
+    const ev = { tipo: "deploy" as const, projeto: "App", id: "dep-1", titulo: "deploy prod", data: new Date(0) };
+    const res = await h.history.recordRemote(h.project, ev);
+    expect(res).toEqual({ path: "", created: false, ignorado: true, updated: false });
+  });
+
+  it("with []: baseline then commit and second sync creates no notes, store dev exists, cursorMs updated", async () => {
+    const dir = makeRepo();
+    const h = harness(dir, []);
+    await h.history.sync(h.project);
+    const firstState = h.store.getDev("App")!;
+    expect(firstState).toBeDefined();
+
+    commit(dir, "b", "c1");
+    await h.history.sync(h.project);
+    expect(h.vault.notes.size).toBe(0);
+    const secondState = h.store.getDev("App")!;
+    expect(secondState).toBeDefined();
+    expect(secondState.cursorMs).toBeGreaterThanOrEqual(firstState.cursorMs);
+  });
+});
+
 describe("stash", () => {
   it("a saved stash makes no event note and is not in the graph; pop keeps working", async () => {
     const dir = makeRepo();
@@ -271,5 +395,23 @@ describe("event helpers", () => {
     const note = renderEventNote({ tipo: "commit", projeto: "App", id: "c1", titulo: "t", data: new Date(0), branch: "main", hash: "abcdef123456" }, "App - Eventos");
     const block = /```ai-git-graph\n([\s\S]*?)```/.exec(note)![1]!;
     expect(parseGraphBlock(block)).toEqual({ projeto: "App", branch: "main", hash: "abcdef123456" });
+  });
+});
+
+describe("saveGraphSvg", () => {
+  it("saves the svg in the project attachments folder and returns its path", async () => {
+    const h = harness(undefined);
+    const path = await h.history.saveGraphSvg(h.project, "<svg>1</svg>");
+    expect(path).toBe("Projetos/App/Anexos/App - grafo.svg");
+    expect(h.vault.notes.get(path)).toBe("<svg>1</svg>");
+  });
+
+  it("rewrites the file when called again and keeps only one svg", async () => {
+    const h = harness(undefined);
+    await h.history.saveGraphSvg(h.project, "<svg>1</svg>");
+    const path = await h.history.saveGraphSvg(h.project, "<svg>2</svg>");
+    expect(path).toBe("Projetos/App/Anexos/App - grafo.svg");
+    expect(h.vault.notes.get(path)).toBe("<svg>2</svg>");
+    expect([...h.vault.notes.keys()].filter((p) => p.includes(".svg"))).toHaveLength(1);
   });
 });

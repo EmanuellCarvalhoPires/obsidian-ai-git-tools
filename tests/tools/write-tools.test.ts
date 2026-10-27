@@ -33,8 +33,8 @@ describe("registro", () => {
   it("expõe as 6 tools de escrita depois das de leitura, com annotations e schema fechado", () => {
     const tools = buildGitTools(makeDeps());
     const names = tools.map((t) => t.name);
-    expect(names.slice(0, 6)).toEqual(["git_status", "git_diff", "git_log", "git_blame", "git_branches", "git_remote_info"]);
-    expect(names.slice(6, 12)).toEqual(WRITE_TOOLS);
+    expect(names.slice(0, 5)).toEqual(["git_status", "git_diff", "git_log", "git_blame", "git_branches"]);
+    expect(names.slice(5, 11)).toEqual(WRITE_TOOLS);
     for (const name of WRITE_TOOLS) {
       const t = tools.find((x) => x.name === name);
       expect(t?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false });

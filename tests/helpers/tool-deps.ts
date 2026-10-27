@@ -6,6 +6,7 @@ import type { ToolRecorder } from "../../src/core/history/recorder";
 import type { ProviderFactory, ProviderId } from "../../src/core/providers/provider";
 import type { SecretsGetter } from "../../src/core/providers/secrets";
 import { isInside } from "../../src/core/repo-resolver";
+import type { RemoteCache } from "../../src/core/repo-resolver";
 import type { HubCallContext, HubTool, HubToolResult } from "../../src/ecosystem/types";
 import type { GitToolDeps } from "../../src/tools/git-tools";
 import { DEFAULT_SETTINGS } from "../../src/types";
@@ -37,6 +38,7 @@ export interface MakeDepsOptions {
   history?: HistoryService;
   tracker?: ProjectLookup;
   remoteSync?: GitToolDeps["remoteSync"];
+  remoteCache?: RemoteCache;
 }
 
 export function makeDeps(opts: MakeDepsOptions = {}): GitToolDeps {
@@ -56,6 +58,7 @@ export function makeDeps(opts: MakeDepsOptions = {}): GitToolDeps {
   if (opts.history) deps.history = opts.history;
   if (opts.tracker) deps.tracker = opts.tracker;
   if (opts.remoteSync) deps.remoteSync = opts.remoteSync;
+  if (opts.remoteCache) deps.remoteCache = opts.remoteCache;
   return deps;
 }
 

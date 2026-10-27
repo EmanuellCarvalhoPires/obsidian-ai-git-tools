@@ -77,6 +77,7 @@ export class Recorder implements ToolRecorder {
       for (const p of planned) {
         try {
           const r = p.remote ? await this.deps.history.recordRemote(project, p.ev) : await this.deps.history.record(project, p.ev);
+          if (r.ignorado === true) continue;
           notes.push(r.path);
         } catch (err) {
           out.avisos.push(`A nota do evento (${p.ev.tipo}) não foi gravada: ${message(err)}`);

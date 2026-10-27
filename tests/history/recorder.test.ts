@@ -6,6 +6,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { createNodeGit } from "../../src/core/git-runner";
 import { CheckpointStore } from "../../src/core/history/checkpoints";
 import { branchId, commitId, prId, pushId } from "../../src/core/history/events";
+import type { DevEventType } from "../../src/core/history/events";
 import { HistoryService } from "../../src/core/history/history-service";
 import { Recorder } from "../../src/core/history/recorder";
 import type { GitProvider, ProviderFactory } from "../../src/core/providers/provider";
@@ -44,6 +45,7 @@ interface EnvOptions {
   providerFactories?: Partial<Record<"github" | "bitbucket", ProviderFactory>>;
   /** The project is not in the lookup of the recorder (a repository allowed only by folder). */
   outsideProject?: boolean;
+  eventTypes?: DevEventType[];
 }
 
 async function makeEnv(opts: EnvOptions = {}): Promise<Env> {
@@ -57,7 +59,7 @@ async function makeEnv(opts: EnvOptions = {}): Promise<Env> {
   const vault = opts.vault ?? new MemoryVault();
   const store = new CheckpointStore({ load: async () => undefined, save: async () => undefined });
   const real = createNodeGit();
-  const history = new HistoryService(real, vault, store, () => ({ eventsFolder: "Eventos" }));
+  const history = new HistoryService(real, vault, store, () => ({ eventsFolder: "Eventos", ...(opts.eventTypes ? { eventTypes: opts.eventTypes } : {}) }));
   const project: ProjectInfo = { name: "App", folder: "Projetos/App", clonePath: repo };
   const recorder = new Recorder({ history, projects: opts.outsideProject ? lookupOf([]) : lookupOf([project]), git: real });
   if (opts.baseline !== false) await history.sync(project);
@@ -189,15 +191,11 @@ describe("push, branch e checkout", () => {
 
   it("a push that finds the remote up to date, and a tag push, write nothing", async () => {
     const e = await makeEnv();
-    const upToDate = await callTool(e.tools, "git_push", { repo: e.repo });
-    expect(dataOf(upToDate).em_dia).toBe(true);
-    expect(dataOf(upToDate).nota).toBeUndefined();
-    await callTool(e.tools, "git_tag", { repo: e.repo, acao: "criar", nome: "v0.1", mensagem: "m" });
-    const before = e.vault.notes.size;
-    const tagPush = await callTool(e.tools, "git_push", { repo: e.repo, tag: "v0.1" });
-    expect(tagPush.isError).toBeUndefined();
-    expect(dataOf(tagPush).nota).toBeUndefined();
-    expect(e.vault.notes.size).toBe(before);
+    const res = await callTool(e.tools, "git_push", { repo: e.repo });
+    expect(dataOf(res).em_dia).toBe(true);
+    expect(dataOf(res).nota).toBeUndefined();
+    expect(notes(e, "Push ")).toHaveLength(0);
+    expect(e.vault.notes.size).toBe(0);
   });
 
   it("a new branch pushed from the terminal-made branch gets a branch note and a push note", async () => {
@@ -350,6 +348,39 @@ describe("pull requests", () => {
     const body = e.vault.notes.get(dataOf(merged).nota as string)!;
     expect(body).toContain('estado: "merged"');
     expect(body).toContain(`hash: ${"b".repeat(40)}`);
+  });
+});
+
+describe("tipos de evento desligados", () => {
+  it("git_commit with eventTypes: ['pr'] succeeds without writing commit note or warnings", async () => {
+    const e = await makeEnv({ eventTypes: ["pr"] });
+    const res = await commitByTool(e, "a.txt", "feat: primeira");
+    expect(res.isError).toBeUndefined();
+    expect(dataOf(res).nota).toBeUndefined();
+    expect(dataOf(res).notas).toBeUndefined();
+    expect(dataOf(res).avisos).toBeUndefined();
+    expect([...e.vault.notes.keys()].filter((p) => p.includes("/Eventos/Commit "))).toHaveLength(0);
+  });
+
+  it("git_pr_criar with eventTypes: ['pr'] writes the PR note and returns nota", async () => {
+    const e = await makeEnv({ remote: "github", providerFactories: { github: fakeProvider() }, eventTypes: ["pr"] });
+    sh(e.repo, "branch", "feature/x");
+    sh(e.repo, "push", "-q", e.bare, "feature/x");
+    const created = await callTool(e.tools, "git_pr_criar", { repo: e.repo, origem: "feature/x", destino: "develop", titulo: "Minha feature" });
+    expect(created.isError).toBeUndefined();
+    const path = "Projetos/App/Eventos/PR 12 - Minha feature.md";
+    expect(dataOf(created).nota).toBe(path);
+    expect(e.vault.notes.has(path)).toBe(true);
+  });
+
+  it("git_push with eventTypes: ['commit'] succeeds without writing push note or warnings", async () => {
+    const e = await makeEnv({ eventTypes: ["commit"] });
+    await commitByTool(e, "a.txt", "para enviar");
+    const res = await callTool(e.tools, "git_push", { repo: e.repo });
+    expect(res.isError).toBeUndefined();
+    expect(dataOf(res).nota).toBeUndefined();
+    expect(dataOf(res).avisos).toBeUndefined();
+    expect([...e.vault.notes.keys()].filter((p) => p.includes("/Eventos/Push "))).toHaveLength(0);
   });
 });
 

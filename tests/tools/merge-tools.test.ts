@@ -51,17 +51,17 @@ const hasHead = (repo: string, name: string): boolean => {
   }
 };
 
-describe("registro das 17 tools", () => {
-  it("as 17 tools, na ordem do contrato, com nomes únicos", () => {
+describe("registro das 16 tools", () => {
+  it("as 16 tools, na ordem do contrato, com nomes únicos", () => {
     const all = buildGitTools(makeDeps()).map((t) => t.name);
-    expect(all).toHaveLength(26); // + as 6 tools de provedor e as 2 de repositório e release (tests/tools/provider-tools.test.ts, repo-release-tools.test.ts)
-    const names = all.slice(0, 17);
+    expect(all).toHaveLength(24); // 16 + 6 de provedor + 2 de repositório e release
+    const names = all.slice(0, 16);
     expect(names).toEqual([
-      "git_status", "git_diff", "git_log", "git_blame", "git_branches", "git_remote_info",
+      "git_status", "git_diff", "git_log", "git_blame", "git_branches",
       "git_fetch", "git_checkout", "git_add", "git_commit", "git_push", "git_pull",
       "git_merge", "git_revert", "git_stash", "git_tag", "git_clone",
     ]);
-    expect(new Set(names).size).toBe(17);
+    expect(new Set(names).size).toBe(16);
   });
 
   it("annotations: escrita local não destrutiva; só o clone tem openWorldHint", () => {

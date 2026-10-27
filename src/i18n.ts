@@ -58,6 +58,14 @@ const en: Table = {
   "settings.sync.running": "Synchronizing...",
   "settings.sync.done": "Synchronized {projects} project(s): {notes} note(s) created, {baselines} first read(s), {errors} error(s).",
   "settings.sync.failed": "Could not synchronize: {reason}",
+  "settings.events.heading": "Event notes",
+  "settings.events.desc":
+    "Kinds of event that become a note in the Events subfolder of each project. Commits and pushes are the bulk of the notes, so they start off.",
+  "settings.eventType.commit": "Commit notes",
+  "settings.eventType.push": "Push notes",
+  "settings.eventType.branch": "Branch notes",
+  "settings.eventType.pr": "PR notes",
+  "settings.eventType.deploy": "Deploy notes",
   "settings.hook.heading": "Agent hook",
   "settings.hook.name": "Hook mode",
   "settings.hook.desc":
@@ -119,6 +127,14 @@ const pt: Table = {
   "settings.sync.running": "Sincronizando...",
   "settings.sync.done": "{projects} projeto(s) sincronizado(s): {notes} nota(s) criada(s), {baselines} primeira(s) leitura(s), {errors} erro(s).",
   "settings.sync.failed": "Não foi possível sincronizar: {reason}",
+  "settings.events.heading": "Notas de evento",
+  "settings.events.desc":
+    "Tipos de evento que viram nota na subpasta de eventos de cada projeto. Commits e pushes são a maior parte das notas, por isso começam desligados.",
+  "settings.eventType.commit": "Notas de commit",
+  "settings.eventType.push": "Notas de push",
+  "settings.eventType.branch": "Notas de branch",
+  "settings.eventType.pr": "Notas de PR",
+  "settings.eventType.deploy": "Notas de deploy",
   "settings.hook.heading": "Hook do agente",
   "settings.hook.name": "Modo do hook",
   "settings.hook.desc":

@@ -8,7 +8,8 @@ import { ProjectTracker } from "./core/history/project-tracker";
 import { Recorder } from "./core/history/recorder";
 import { RemoteSync, createProviderResolver } from "./core/history/remote-sync";
 import { HistoryWatcher } from "./core/history/watcher";
-import type { ProjectInfo, ProjectLookup } from "./core/ports";
+import { createRemoteCache } from "./core/repo-resolver";
+import type { ProjectInfo } from "./core/ports";
 import { createSecureHttp } from "./core/providers/http";
 import { inspectSecrets, redactWith } from "./core/providers/secrets";
 import type { SecretListing, SecretsGetter } from "./core/providers/secrets";
@@ -36,55 +37,8 @@ const VIEW_TYPE = "ai-git-tools-view";
 /** Text appended to the MCP instructions of the AI Ecosystem. */
 export const GIT_INSTRUCTIONS =
   "AI Git Tools runs git and reads GitHub or Bitbucket pull requests and pipelines for you. " +
-  "Use its tools instead of running git or the provider APIs from the shell, so every repository action is recorded in the project history.";
-
-/** Service other modules read. The AI Log Manager draws the repository graph through it. */
-export interface GitToolsService {
-  version: string;
-  hasProject(name: string): boolean;
-  /**
-   * The SVG of the repository graph of a project, or undefined when the project is unknown, has no
-   * clone, has no commits or the repository cannot be read. `largura` is the width in pixels.
-   */
-  renderGraphSvg(project: string, options?: { branch?: string; hash?: string; limite?: number; largura?: number }): Promise<string | undefined>;
-}
-
-export interface GitToolsServiceDeps {
-  version: string;
-  history: Pick<HistoryService, "graph">;
-  projects: Pick<ProjectLookup, "byName">;
-  /** Projects as last listed (synchronous cache, kept fresh by the plugin). */
-  knownProjects: () => readonly Pick<ProjectInfo, "name">[];
-}
-
-/**
- * The real `ai-git-tools` service. `hasProject` answers from the cache of the last listing (it must
- * be synchronous); `renderGraphSvg` always asks the tracker, so it is right even when the cache is stale.
- */
-export function createGitToolsService(deps: GitToolsServiceDeps): GitToolsService {
-  return {
-    version: deps.version,
-    hasProject: (name) => {
-      const key = name.trim().toLowerCase();
-      return key !== "" && deps.knownProjects().some((p) => p.name.toLowerCase() === key);
-    },
-    renderGraphSvg: async (name, options = {}) => {
-      try {
-        const project = await deps.projects.byName(name);
-        if (!project?.clonePath) return undefined;
-        const g = await deps.history.graph(project, {
-          limit: options.limite,
-          width: options.largura,
-          highlight: { branch: options.branch, hash: options.hash },
-        });
-        return g.rows.length > 0 ? g.svg : undefined;
-      } catch (err) {
-        console.debug("[AI Git Tools] could not draw the graph", err);
-        return undefined;
-      }
-    },
-  };
-}
+  "Use its tools instead of running git or the provider APIs from the shell, so every repository action is recorded in the project history." +
+  " For provider operations that are not tools here (for example editing or reopening a pull request): on Bitbucket use search_vault_tools + run_vault_tool; on GitHub use http_request with Authorization {{bearer:NOME}} on api.github.com.";
 
 export default class AiGitToolsPlugin extends Plugin implements SettingsHost {
   settings: Settings = { ...DEFAULT_SETTINGS };
@@ -123,7 +77,7 @@ export default class AiGitToolsPlugin extends Plugin implements SettingsHost {
     this.settings = normalizeSettings(await this.loadData());
     const git = createNodeGit();
     const vault = new ObsidianVaultPort(this.app);
-    this.projects = new ProjectTracker(vault, () => this.settings);
+    this.projects = new ProjectTracker(vault, () => this.settings, { cacheMs: 60_000 });
     // The checkpoints are a file of this plugin (never the state of the AI Log Manager).
     this.checkpoints = await CheckpointStore.open(createFileStorage(this.app.vault.adapter, normalizePath(`${this.manifest.dir ?? ""}/checkpoints.json`)));
     this.history = new HistoryService(git, vault, this.checkpoints, () => this.settings);
@@ -149,6 +103,7 @@ export default class AiGitToolsPlugin extends Plugin implements SettingsHost {
       history: this.history,
       tracker: this.projects,
       remoteSync: this.remoteSync,
+      remoteCache: createRemoteCache(),
     };
     this.connector = new EcosystemConnector(this, {
       buildRegistration: () => ({
@@ -190,6 +145,10 @@ export default class AiGitToolsPlugin extends Plugin implements SettingsHost {
     const refresh = debounce(() => void this.refreshProjects(), 3000, true);
     this.registerEvent(this.app.metadataCache.on("changed", refresh));
     this.registerEvent(this.app.metadataCache.on("deleted", refresh));
+    const invalidate = (): void => this.projects.invalidate();
+    this.registerEvent(this.app.metadataCache.on("changed", invalidate));
+    this.registerEvent(this.app.metadataCache.on("deleted", invalidate));
+    this.registerEvent(this.app.metadataCache.on("resolved", invalidate));
   }
 
   /**
@@ -257,20 +216,10 @@ export default class AiGitToolsPlugin extends Plugin implements SettingsHost {
         listSecrets: () => inspectSecrets(this.getSecrets),
       }),
     );
-    api.registerService<GitToolsService>(
-      "ai-git-tools",
-      MODULE_ID,
-      createGitToolsService({
-        version: this.manifest.version,
-        history: this.history,
-        projects: this.projects,
-        knownProjects: () => this.lastProjects,
-      }),
-    );
   }
 
   /**
-   * Synchronizes the 30 tool definitions with the module's tools.db in AI Ecosystem.
+   * Synchronizes the tool definitions with the module's tools.db in AI Ecosystem.
    */
   private syncToolIndex(): void {
     const api = this.connector?.getApi();

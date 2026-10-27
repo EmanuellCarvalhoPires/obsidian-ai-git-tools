@@ -1,3 +1,5 @@
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { createNodeGit } from "../../../src/core/git-runner";
 import { GuardError } from "../../../src/core/guards";
@@ -103,5 +105,80 @@ describe("gitDiff", () => {
     await expect(gitDiff(never, repo, { alvo: "worktree", contexto: -1 })).rejects.toThrow(GuardError);
     await expect(gitDiff(never, repo, { alvo: "worktree", maxBytes: 0 })).rejects.toThrow(GuardError);
     await expect(gitDiff(never, repo, { alvo: "outro" as unknown as "refs" })).rejects.toThrow(GuardError);
+  });
+
+  it("remove linhas de índice e lista omitidos quando cortado", async () => {
+    const repo = makeRepo();
+    writeFile(repo, "a.txt", "conteudo a\n");
+    writeFile(repo, "b.txt", "conteudo b\n");
+    sh(repo, "add", ".");
+    sh(repo, "commit", "-m", "inicial");
+
+    writeFile(repo, "README.md", "# alterado readme\n");
+    writeFile(repo, "a.txt", "conteudo a alterado\n");
+    writeFile(repo, "b.txt", "conteudo b alterado\n");
+
+    const res = await gitDiff(git, repo, { alvo: "worktree" });
+    expect(res.diff).not.toMatch(/^index /m);
+    expect(res.omitidos).toEqual([]);
+
+    const secondHeader = res.diff.indexOf("\ndiff --git", 1);
+    expect(secondHeader).toBeGreaterThan(0);
+    const cut = await gitDiff(git, repo, { alvo: "worktree", maxBytes: secondHeader - 1 });
+    expect(cut.truncado).toBe(true);
+    expect(cut.omitidos).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ caminho: "a.txt", adicionadas: expect.any(Number), removidas: expect.any(Number) }),
+        expect.objectContaining({ caminho: "b.txt", adicionadas: expect.any(Number), removidas: expect.any(Number) }),
+      ]),
+    );
+    expect(cut.omitidos.map((o) => o.caminho)).not.toContain("README.md");
+  });
+
+  it("stat: true com maxBytes minúsculo: omitidos é []", async () => {
+    const repo = makeRepo();
+    writeFile(repo, "a.txt", "1\n");
+    writeFile(repo, "b.txt", "2\n");
+    sh(repo, "add", ".");
+    sh(repo, "commit", "-m", "inicial");
+    writeFile(repo, "a.txt", "1 mudou\n");
+    writeFile(repo, "b.txt", "2 mudou\n");
+    const res = await gitDiff(git, repo, { alvo: "worktree", stat: true, maxBytes: 10 });
+    expect(res.truncado).toBe(true);
+    expect(res.omitidos).toEqual([]);
+  });
+
+  it("sem maxBytes devolve truncado true e bytes <= 40000 para diff de ~100000 bytes", async () => {
+    const repo = makeRepo();
+    writeFile(repo, "grande.txt", "inicio\n");
+    sh(repo, "add", ".");
+    sh(repo, "commit", "-m", "inicio");
+    const linha = "123456789012345678901234567890123456789\n";
+    writeFile(repo, "grande.txt", linha.repeat(3000));
+    const res = await gitDiff(git, repo, { alvo: "worktree" });
+    expect(res.truncado).toBe(true);
+    expect(res.bytes).toBeLessThanOrEqual(40_000);
+  });
+
+  it("arquivo binário alterado aparece em omitidos com adicionadas null quando cortado", async () => {
+    const repo = makeRepo();
+    const binPath = join(repo, "imagem.bin");
+    writeFileSync(binPath, Buffer.from([0, 1, 2, 3, 4, 5, 6, 7]));
+    sh(repo, "add", ".");
+    sh(repo, "commit", "-m", "commit binario");
+
+    writeFile(repo, "README.md", `${"linha de texto longa\n".repeat(100)}`);
+    writeFileSync(binPath, Buffer.from([7, 6, 5, 4, 3, 2, 1, 0, 99]));
+
+    const full = await gitDiff(git, repo, { alvo: "worktree" });
+    const binHeader = full.diff.indexOf("\ndiff --git a/imagem.bin", 1);
+    expect(binHeader).toBeGreaterThan(0);
+
+    const cut = await gitDiff(git, repo, { alvo: "worktree", maxBytes: binHeader - 1 });
+    expect(cut.truncado).toBe(true);
+    const binOmitido = cut.omitidos.find((o) => o.caminho === "imagem.bin");
+    expect(binOmitido).toBeDefined();
+    expect(binOmitido?.adicionadas).toBeNull();
+    expect(binOmitido?.removidas).toBeNull();
   });
 });

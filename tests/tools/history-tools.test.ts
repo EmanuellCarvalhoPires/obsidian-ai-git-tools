@@ -3,6 +3,8 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { createNodeGit } from "../../src/core/git-runner";
 import { CheckpointStore } from "../../src/core/history/checkpoints";
+import { prId } from "../../src/core/history/events";
+import type { DevEventType } from "../../src/core/history/events";
 import { HistoryService } from "../../src/core/history/history-service";
 import type { RemoteSyncResult } from "../../src/core/history/remote-sync";
 import type { ProjectInfo } from "../../src/core/ports";
@@ -21,10 +23,10 @@ function commit(dir: string, file: string, message: string): string {
   return sh(dir, "rev-parse", "HEAD").trim();
 }
 
-function setup(projects: { name: string; clone: string }[], remoteSync?: { syncProject: (p: ProjectInfo) => Promise<RemoteSyncResult> }) {
+function setup(projects: { name: string; clone: string }[], remoteSync?: { syncProject: (p: ProjectInfo) => Promise<RemoteSyncResult> }, eventTypes?: DevEventType[]) {
   const vault = new MemoryVault();
   const store = new CheckpointStore({ load: async () => undefined, save: async () => undefined });
-  const history = new HistoryService(createNodeGit(), vault, store, () => ({ eventsFolder: "Eventos", changelogsFolder: "Changelogs" }));
+  const history = new HistoryService(createNodeGit(), vault, store, () => ({ eventsFolder: "Eventos", changelogsFolder: "Changelogs", ...(eventTypes ? { eventTypes } : {}) }));
   const deps = makeDeps({ projects, history, ...(remoteSync ? { remoteSync } : {}) });
   const tools = buildHistoryTools(deps);
   const call = (name: string, args: Record<string, unknown>) => callTool(tools, name, args);
@@ -35,14 +37,14 @@ const names = (list: { name: string }[]): string[] => list.map((t) => t.name);
 const eventNotes = (v: MemoryVault): string[] => [...v.notes.keys()].filter((p) => p.includes("/Eventos/") && !p.endsWith("Eventos.md"));
 
 describe("registry", () => {
-  it("has 30 tools with the history deps and 26 without them", () => {
+  it("has 28 tools with the history deps and 24 without them", () => {
     const repo = makeRepo();
     const s = setup([{ name: "App", clone: repo }]);
     const all = buildGitTools(s.deps);
-    expect(all).toHaveLength(30);
+    expect(all).toHaveLength(28);
     expect(names(all).slice(-4)).toEqual(["git_graph", "git_changelog", "git_sync", "git_registrar_evento"]);
-    expect(new Set(names(all)).size).toBe(30);
-    expect(buildGitTools(makeDeps({ projects: [{ name: "App", clone: repo }] }))).toHaveLength(26);
+    expect(new Set(names(all)).size).toBe(28);
+    expect(buildGitTools(makeDeps({ projects: [{ name: "App", clone: repo }] }))).toHaveLength(24);
   });
 
   it("annotates the tools as the contract says", () => {
@@ -112,7 +114,7 @@ describe("git_graph", () => {
     commit(repo, "c", "na main");
     sh(repo, "merge", "-q", "--no-ff", "-m", "Merge feature", "feature/x");
     const s = setup([{ name: "App", clone: repo }]);
-    const r = await s.call("git_graph", { projeto: "App", branch: "feature/x", hash: onFeature.slice(0, 7) });
+    const r = await s.call("git_graph", { projeto: "App", branch: "feature/x", hash: onFeature.slice(0, 7), formato: "svg" });
     expect(r.isError).not.toBe(true);
     const d = dataOf(r);
     expect(d).toMatchObject({ ok: true, projeto: "App", commits: 4 });
@@ -124,6 +126,55 @@ describe("git_graph", () => {
     expect(text).toContain("na feature");
     expect(text).toContain("Merge feature");
     expect(text).toContain("SVG:");
+  });
+
+  it("defaults to formato texto, returning only text lines without svg", async () => {
+    const repo = makeRepo();
+    sh(repo, "checkout", "-q", "-b", "feature/x");
+    commit(repo, "b", "na feature");
+    sh(repo, "checkout", "-q", "main");
+    commit(repo, "c", "na main");
+    sh(repo, "merge", "-q", "--no-ff", "-m", "Merge feature", "feature/x");
+    const s = setup([{ name: "App", clone: repo }]);
+    const r = await s.call("git_graph", { projeto: "App" });
+    expect(r.isError).not.toBe(true);
+    expect(JSON.stringify(r)).not.toContain("<svg");
+    const d = dataOf(r);
+    expect(d.formato).toBe("texto");
+    expect(d.commits).toBe(4);
+    expect(d.svg).toBeUndefined();
+    expect(d.linhas).toBeUndefined();
+    expect(textOf(r)).toContain("na feature");
+  });
+
+  it("saves the svg in Anexos with formato arquivo", async () => {
+    const repo = makeRepo();
+    commit(repo, "b", "na feature");
+    const s = setup([{ name: "App", clone: repo }]);
+    const r = await s.call("git_graph", { projeto: "App", formato: "arquivo" });
+    expect(r.isError).not.toBe(true);
+    const d = dataOf(r);
+    expect(d.caminho).toBeDefined();
+    expect(s.vault.notes.get(d.caminho as string)).toContain("<svg");
+    expect(textOf(r)).toContain(d.caminho as string);
+    expect(textOf(r)).not.toContain("<svg");
+  });
+
+  it("refuses an invalid formato", async () => {
+    const repo = makeRepo();
+    const s = setup([{ name: "App", clone: repo }]);
+    const r = await s.call("git_graph", { projeto: "App", formato: "xml" });
+    expect(dataOf(r).codigo).toBe("argumento_invalido");
+  });
+
+  it("does not create a .svg note when the repository has no commits", async () => {
+    const dir = join(makeTempDir(), "sem-commits");
+    mkdirSync(dir);
+    sh(dir, "init", "-b", "main");
+    const s = setup([{ name: "App", clone: dir }]);
+    const r = await s.call("git_graph", { projeto: "App", formato: "arquivo" });
+    expect(r.isError).not.toBe(true);
+    expect([...s.vault.notes.keys()].some((p) => p.endsWith(".svg"))).toBe(false);
   });
 
   it("honors limite", async () => {
@@ -367,10 +418,68 @@ describe("git_registrar_evento", () => {
     expect(eventNotes(s.vault)).toHaveLength(0);
   });
 
+  it("ignores the eventTypes filter and records even when eventTypes is empty", async () => {
+    const repo = makeRepo();
+    const s = setup([{ name: "App", clone: repo }], undefined, []);
+    const first = await s.call("git_registrar_evento", PR);
+    expect(dataOf(first).criado).toBe(true);
+    expect(s.vault.notes.has(dataOf(first).caminho as string)).toBe(true);
+    const second = await s.call("git_registrar_evento", PR);
+    expect(dataOf(second).criado).toBe(false);
+  });
+
   it("an empty clone folder is not a repository", async () => {
     const dir = join(makeTempDir(), "nao-criada");
     mkdirSync(dir);
     const s = setup([{ name: "App", clone: dir }]);
     expect(dataOf(await s.call("git_registrar_evento", PR)).codigo).toBe("argumento_invalido");
+  });
+
+  it("with numero on a GitHub clone sets remote-sync prId and does not duplicate on repeat", async () => {
+    const repo = makeRepo();
+    sh(repo, "remote", "add", "origin", "https://github.com/o/r.git");
+    const s = setup([{ name: "App", clone: repo }]);
+    const first = await s.call("git_registrar_evento", { projeto: "App", tipo: "pr", titulo: "Abre o PR 12", numero: 12 });
+    expect(dataOf(first)).toMatchObject({ id: "pr-github-o/r-12", criado: true });
+    const second = await s.call("git_registrar_evento", { projeto: "App", tipo: "pr", titulo: "Abre o PR 12", numero: 12 });
+    expect(dataOf(second)).toMatchObject({ id: "pr-github-o/r-12", criado: false, caminho: dataOf(first).caminho });
+    expect(eventNotes(s.vault)).toHaveLength(1);
+  });
+
+  it("recognizes a PR note already created by remote sync and does not duplicate", async () => {
+    const repo = makeRepo();
+    sh(repo, "remote", "add", "origin", "https://github.com/o/r.git");
+    const s = setup([{ name: "App", clone: repo }]);
+    const remoteRecord = await s.history.recordRemote(
+      { name: "App", folder: "Projetos/App", clonePath: repo },
+      { tipo: "pr", projeto: "App", id: prId("github", "o/r", 12), titulo: "Abre o PR 12", data: new Date(), estado: "open" },
+    );
+    const r = await s.call("git_registrar_evento", { projeto: "App", tipo: "pr", titulo: "Abre o PR 12", numero: 12 });
+    expect(dataOf(r)).toMatchObject({ criado: false, caminho: remoteRecord.path });
+    expect(eventNotes(s.vault)).toHaveLength(1);
+  });
+
+  it("refuses numero with tipo other than pr", async () => {
+    const repo = makeRepo();
+    const s = setup([{ name: "App", clone: repo }]);
+    const r = await s.call("git_registrar_evento", { projeto: "App", tipo: "commit", titulo: "Commit", numero: 12 });
+    expect(dataOf(r).codigo).toBe("argumento_invalido");
+    expect(textOf(r)).toContain("só vale com tipo pr");
+  });
+
+  it("refuses numero when remote is not GitHub or Bitbucket", async () => {
+    const repo = makeRepo();
+    sh(repo, "remote", "add", "origin", "https://exemplo.com/o/r.git");
+    const s = setup([{ name: "App", clone: repo }]);
+    const r = await s.call("git_registrar_evento", { projeto: "App", tipo: "pr", titulo: "Abre o PR 12", numero: 12 });
+    expect(dataOf(r).codigo).toBe("argumento_invalido");
+    expect(eventNotes(s.vault)).toHaveLength(0);
+  });
+
+  it("refuses numero less than 1", async () => {
+    const repo = makeRepo();
+    const s = setup([{ name: "App", clone: repo }]);
+    const r = await s.call("git_registrar_evento", { projeto: "App", tipo: "pr", titulo: "Abre o PR 12", numero: 0 });
+    expect(dataOf(r).codigo).toBe("argumento_invalido");
   });
 });

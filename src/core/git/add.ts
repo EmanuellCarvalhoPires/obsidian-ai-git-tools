@@ -56,12 +56,12 @@ export async function gitAdd(git: GitRunner, root: string, args: AddArgs): Promi
   if (!todos && args.caminhos === undefined) throw new GuardError("Informe caminhos ou todos=true.");
   const pathspec = todos ? undefined : assertPathspec(args.caminhos ?? []);
 
-  const incoming = await pathsToStage(git, root, pathspec);
+  const [incoming, statusBefore] = await Promise.all([pathsToStage(git, root, pathspec), gitStatus(git, root)]);
   const sensiveis = [...new Set([...incoming, ...(pathspec ?? [])].filter(isSensitivePath))];
   const confirmed = args.confirmarSensivel === true;
   if (sensiveis.length > 0 && !confirmed) return { recusado: true, sensiveis };
 
-  const before = new Set((await gitStatus(git, root)).staged.map((e) => e.caminho));
+  const before = new Set(statusBefore.staged.map((e) => e.caminho));
   const argv = todos ? ["add", "-A"] : ["add", "--", ...(pathspec ?? [])];
   rejectForbiddenFlags(argv);
   await git(root, argv);

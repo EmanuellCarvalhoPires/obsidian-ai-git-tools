@@ -43,6 +43,37 @@ export interface RepoResolverDeps {
   allowAnyFolder?: () => boolean;
   /** Real path of an existing path; defaults to the native `realpath`. Rejects when missing. */
   realpath?: (path: string) => Promise<string>;
+  /** Short-lived cache of the remote of each repository. */
+  remoteCache?: RemoteCache;
+}
+
+/** Short-lived cache of the remote of a repository, keyed by its real root. `null` means "no remote". */
+export interface RemoteCache {
+  get(root: string): ResolvedRemote | null | undefined;
+  set(root: string, value: ResolvedRemote | undefined): void;
+  forget(root: string): void;
+}
+
+export function createRemoteCache(ttlMs = 30_000, now: () => number = Date.now): RemoteCache {
+  const entries = new Map<string, { at: number; value: ResolvedRemote | null }>();
+  return {
+    get(root) {
+      const key = normalizePathKey(root);
+      const hit = entries.get(key);
+      if (!hit) return undefined;
+      if (now() - hit.at >= ttlMs) {
+        entries.delete(key);
+        return undefined;
+      }
+      return hit.value;
+    },
+    set(root, value) {
+      entries.set(normalizePathKey(root), { at: now(), value: value ?? null });
+    },
+    forget(root) {
+      entries.delete(normalizePathKey(root));
+    },
+  };
 }
 
 /** Lower case, "/" separators, no trailing slash: how paths are compared (Windows is case-insensitive). */
@@ -71,6 +102,8 @@ export async function resolveRepo(input: string, deps: RepoResolverDeps): Promis
   const text = typeof input === "string" ? input.trim() : "";
   if (text === "") throw new GuardError("Informe o projeto ou o caminho do repositório.");
 
+  const all = await deps.projects.list();
+
   let candidate: string;
   let projectName: string | undefined;
   if (looksLikePath(text)) {
@@ -78,7 +111,7 @@ export async function resolveRepo(input: string, deps: RepoResolverDeps): Promis
     if (text.split(/[\\/]/).some((seg) => seg === "..")) throw new RepoError(`O caminho não pode conter "..": ${text}`);
     candidate = text;
   } else {
-    const project = await deps.projects.byName(text);
+    const project = all.find((p) => p.name.toLowerCase() === text.toLowerCase());
     if (!project) throw new RepoError(`Projeto não encontrado: ${text}`);
     if (!project.clonePath) throw new RepoError(`O projeto ${project.name} não tem clone local na nota.`);
     projectName = project.name;
@@ -93,23 +126,35 @@ export async function resolveRepo(input: string, deps: RepoResolverDeps): Promis
   }
 
   // Allowed roots: the clones of the projects and the extra folders (all with real paths).
-  const projects = await deps.projects.list();
+  const cloneRoots = await Promise.all(
+    all.map(async (p) => {
+      if (!p.clonePath) return undefined;
+      try {
+        return { path: await real(p.clonePath), project: p.name };
+      } catch {
+        // clone missing on disk: cannot grant anything
+        return undefined;
+      }
+    }),
+  );
+  const folderRoots = await Promise.all(
+    deps.allowedFolders().map(async (folder) => {
+      const trimmed = folder.trim();
+      if (trimmed === "" || !isAbsolute(trimmed)) return undefined;
+      try {
+        return { path: await real(trimmed) };
+      } catch {
+        // folder missing on disk
+        return undefined;
+      }
+    }),
+  );
   const roots: { path: string; project?: string }[] = [];
-  for (const p of projects) {
-    if (!p.clonePath) continue;
-    try {
-      roots.push({ path: await real(p.clonePath), project: p.name });
-    } catch {
-      // clone missing on disk: cannot grant anything
-    }
+  for (const r of cloneRoots) {
+    if (r !== undefined) roots.push(r);
   }
-  for (const folder of deps.allowedFolders()) {
-    if (folder.trim() === "" || !isAbsolute(folder.trim())) continue;
-    try {
-      roots.push({ path: await real(folder.trim()) });
-    } catch {
-      // folder missing on disk
-    }
+  for (const r of folderRoots) {
+    if (r !== undefined) roots.push(r);
   }
 
   const anyFolder = deps.allowAnyFolder?.() ?? false;
@@ -139,12 +184,18 @@ export async function resolveRepo(input: string, deps: RepoResolverDeps): Promis
   const resolved: ResolvedRepo = { root };
   const owner = projectName ?? owners.find((r) => r.project !== undefined)?.project;
   if (owner !== undefined) resolved.projeto = owner;
-  const remoto = await readRemote(deps.git, root);
+  const cached = deps.remoteCache?.get(root);
+  let remoto: ResolvedRemote | undefined;
+  if (cached !== undefined) remoto = cached ?? undefined;
+  else {
+    remoto = await readRemote(deps.git, root);
+    deps.remoteCache?.set(root, remoto);
+  }
   if (remoto) resolved.remoto = remoto;
   return resolved;
 }
 
-async function readRemote(git: GitRunner, root: string): Promise<ResolvedRemote | undefined> {
+export async function readRemote(git: GitRunner, root: string): Promise<ResolvedRemote | undefined> {
   try {
     const names = (await git(root, ["remote"])).split(/\r?\n/).map((s) => s.trim()).filter((s) => s !== "");
     const nome = names.includes("origin") ? "origin" : names[0];

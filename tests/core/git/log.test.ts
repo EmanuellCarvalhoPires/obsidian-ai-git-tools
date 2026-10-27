@@ -44,8 +44,21 @@ describe("gitLog", () => {
     expect(res.commits[0]?.pais).toHaveLength(1);
     expect(res.commits[3]?.pais).toEqual([]);
     expect(res.commits[0]?.data).toMatch(/^\d{4}-\d{2}-\d{2}T/);
-    expect(res.limite).toBe(30);
+    expect(res.limite).toBe(10);
     expect(res.podeHaverMais).toBe(false);
+  });
+
+  it("limite padrão é 10 e sinaliza podeHaverMais quando há mais commits", async () => {
+    const repo = makeRepo();
+    for (let i = 1; i <= 11; i++) {
+      writeFile(repo, `file${i}.txt`, `conteudo ${i}\n`);
+      sh(repo, "add", `file${i}.txt`);
+      sh(repo, "commit", "-m", `commit ${i}`);
+    }
+    const res = await gitLog(git, repo, {});
+    expect(res.limite).toBe(10);
+    expect(res.commits).toHaveLength(10);
+    expect(res.podeHaverMais).toBe(true);
   });
 
   it("limite, autor, caminho, ref e intervalo", async () => {

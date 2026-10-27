@@ -95,4 +95,23 @@ describe("gitAdd", () => {
     const repo = makeRepo();
     await expect(gitAdd(git, repo, { caminhos: ["nao-existe.txt"] })).rejects.toMatchObject({ name: "GitError" });
   });
+
+  it("recusa arquivo sensível sem chamar git add", async () => {
+    const repo = makeRepo();
+    writeFile(repo, ".env", "SEGREDO=1\n");
+    const spy = spyGit();
+    const res = await gitAdd(spy.git, repo, { todos: true });
+    expect(res).toMatchObject({ recusado: true, sensiveis: [".env"] });
+    expect(spy.callsTo("add")).toEqual([]);
+  });
+
+  it("adiciona arquivo comum executando add uma vez e status três vezes", async () => {
+    const repo = makeRepo();
+    writeFile(repo, "comum.txt", "conteudo\n");
+    const spy = spyGit();
+    const res = await gitAdd(spy.git, repo, { caminhos: ["comum.txt"] });
+    expect(res.recusado).toBe(false);
+    expect(spy.callsTo("add")).toHaveLength(1);
+    expect(spy.callsTo("status")).toHaveLength(3);
+  });
 });

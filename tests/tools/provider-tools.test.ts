@@ -10,6 +10,7 @@ import type { ProviderFactory, ProviderId } from "../../src/core/providers/provi
 import type { HubTool, HubToolResult, SecretRequest, SecretResponse, SecretInfo } from "../../src/ecosystem/types";
 import { buildGitTools } from "../../src/tools/git-tools";
 import { gitflowAvisos } from "../../src/tools/provider-tools";
+import { GIT_INSTRUCTIONS } from "../../src/main";
 import { FAKE_VALUE, makeFakeSecrets, reply, secretInfo } from "../helpers/fake-secrets";
 import type { FakeSecrets } from "../helpers/fake-secrets";
 import { cleanupTemp, makeBareRemote, makeRepo, makeTempDir, sh } from "../helpers/git-repos";
@@ -147,10 +148,10 @@ function fakeClock(): { options: BitbucketOptions; time: () => number } {
   };
 }
 
-describe("the 26 tools", () => {
+describe("the 24 tools", () => {
   it("adds the six provider tools with the annotations of the contract", () => {
     const { tools } = makeEnv({ remote: BB_REMOTE });
-    expect(tools).toHaveLength(26);
+    expect(tools).toHaveLength(24);
     const byName = (n: string) => tools.find((t) => t.name === n)!;
     for (const n of ["git_pr_listar", "git_pr_obter", "git_pipeline_status"]) {
       expect(byName(n).annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false, openWorldHint: true });
@@ -166,12 +167,19 @@ describe("the 26 tools", () => {
     for (const n of ["git_pr_criar", "git_pr_listar", "git_pr_obter", "git_pr_comentar", "git_pr_merge", "git_pipeline_status"]) {
       const t = tools.find((x) => x.name === n)!;
       expect(t.inputSchema.additionalProperties).toBe(false);
-      expect(t.description).toContain("search_vault_tools + run_vault_tool");
-      expect(t.description).toContain("{{bearer:NOME}}");
+      expect(t.description).not.toContain("search_vault_tools + run_vault_tool");
+      expect(t.description).not.toContain("{{bearer:NOME}}");
     }
     const merge = tools.find((t) => t.name === "git_pr_merge")!;
-    expect(merge.description).toContain("aprovação do usuário");
+    expect(merge.description).toContain("Não há hook de aprovação");
+    expect(merge.description).toContain("pergunte ao usuário no chat");
+    expect(merge.description).not.toContain("o hook de aprovação do AI Ecosystem pergunta");
     expect(merge.inputSchema.required).toEqual(["repo", "numero", "destino", "titulo", "estrategia"]);
+  });
+
+  it("names the provider fallback in GIT_INSTRUCTIONS", () => {
+    expect(GIT_INSTRUCTIONS).toContain("search_vault_tools + run_vault_tool");
+    expect(GIT_INSTRUCTIONS).toContain("{{bearer:NOME}}");
   });
 });
 
@@ -351,6 +359,17 @@ describe("git_pr_listar", () => {
     const data = dataOf(res);
     expect(data).toMatchObject({ ok: true, provedor: "bitbucket", estado: "aberto", total: 2, truncado: false });
     expect((data.prs as Array<{ numero: number }>).map((p) => p.numero)).toEqual([12, 13]);
+    const firstPr = (data.prs as Record<string, unknown>[])[0]!;
+    expect(firstPr).not.toHaveProperty("descricao");
+    expect(firstPr).not.toHaveProperty("head_sha");
+    expect(firstPr).toHaveProperty("numero");
+    expect(firstPr).toHaveProperty("titulo");
+    expect(firstPr).toHaveProperty("estado");
+    expect(firstPr).toHaveProperty("origem");
+    expect(firstPr).toHaveProperty("destino");
+    expect(firstPr).toHaveProperty("url");
+    expect(firstPr).toHaveProperty("autor");
+    expect(firstPr).toHaveProperty("criado_em");
     expect(textOf(res)).toContain("#13");
     const url = new URL(env.fake.calls[0]!.req.url);
     expect(url.searchParams.getAll("state")).toEqual(["OPEN"]);
@@ -395,7 +414,7 @@ describe("git_pr_obter", () => {
     const res = await callTool(env.tools, "git_pr_obter", { repo: env.repo, numero: 12, incluir: ["commits", "diff", "comentarios"] });
     expect(res.isError).toBeUndefined();
     const data = dataOf(res);
-    expect(data).toMatchObject({ numero: 12, estado: "aberto", destino: "develop", diff: "diff --git a/x b/x\n+linha\n", diff_truncado: false });
+    expect(data).toMatchObject({ numero: 12, estado: "aberto", destino: "develop", diff: "diff --git a/x b/x\n+linha\n", diff_truncado: false, descricao: "Descricao" });
     expect((data.commits as Array<{ hash: string }>)[0]!.hash).toBe("c1c1c1c1");
     expect((data.comentarios as Array<{ texto: string }>)[0]!.texto).toBe("ok");
     expect(textOf(res)).toContain("diff --git a/x b/x");
