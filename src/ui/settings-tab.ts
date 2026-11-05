@@ -200,7 +200,10 @@ export class AiGitToolsSettingTab extends PluginSettingTab {
               .syncAllProjects()
               .then((r) => new Notice(t("settings.sync.done", { projects: r.projects, notes: r.created, baselines: r.baselines, errors: r.errors })))
               .catch((err: unknown) => new Notice(t("settings.sync.failed", { reason: err instanceof Error ? err.message : String(err) })))
-              .finally(() => btn.setDisabled(false));
+              .finally(() => {
+                // Block body on purpose: returning the button (a thenable) would make the Promise loop forever.
+                btn.setDisabled(false);
+              });
           }),
       );
   }
