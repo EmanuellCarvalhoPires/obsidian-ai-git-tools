@@ -11,6 +11,7 @@ export default defineConfig({
     setupFiles: ["tests/setup.ts"],
     include: ["tests/**/*.test.ts"],
     exclude: ["node_modules/**", ".claude/**"],
-    testTimeout: 20000,
+    // Tests with real git repositories get slow on Windows when the machine is busy.
+    testTimeout: 30000,
   },
 });

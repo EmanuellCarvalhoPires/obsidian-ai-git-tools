@@ -9,6 +9,7 @@ import type { GitRunner } from "../../src/core/ports";
 import type { ProviderFactory, ProviderId } from "../../src/core/providers/provider";
 import type { HubTool, HubToolResult, SecretRequest, SecretResponse, SecretInfo } from "../../src/ecosystem/types";
 import { buildGitTools } from "../../src/tools/git-tools";
+import type { GitToolDeps } from "../../src/tools/git-tools";
 import { gitflowAvisos } from "../../src/tools/provider-tools";
 import { GIT_INSTRUCTIONS } from "../../src/main";
 import { FAKE_VALUE, makeFakeSecrets, reply, secretInfo } from "../helpers/fake-secrets";
@@ -68,6 +69,8 @@ interface EnvOptions {
   remoteBranches?: string[];
   lsRemoteFails?: boolean;
   providerFactories?: Partial<Record<ProviderId, ProviderFactory>>;
+  /** Extra dependencies of the tools (e.g. a fake clock and sleep). */
+  extraDeps?: Partial<GitToolDeps>;
 }
 
 function makeEnv(opts: EnvOptions): Env {
@@ -100,6 +103,7 @@ function makeEnv(opts: EnvOptions): Env {
     settings: { secretGithub: opts.secretGithub ?? "GH_TESTE", secretBitbucket: opts.secretBitbucket ?? "BB_TESTE" },
     ...(opts.providerFactories ? { providerFactories: opts.providerFactories } : {}),
   });
+  Object.assign(deps, opts.extraDeps ?? {});
   return { repo, bare, tools: buildGitTools(deps), fake, lsRemote };
 }
 
@@ -148,12 +152,12 @@ function fakeClock(): { options: BitbucketOptions; time: () => number } {
   };
 }
 
-describe("the 24 tools", () => {
+describe("the 25 tools", () => {
   it("adds the six provider tools with the annotations of the contract", () => {
     const { tools } = makeEnv({ remote: BB_REMOTE });
-    expect(tools).toHaveLength(24);
+    expect(tools).toHaveLength(25);
     const byName = (n: string) => tools.find((t) => t.name === n)!;
-    for (const n of ["git_pr_listar", "git_pr_obter", "git_pipeline_status"]) {
+    for (const n of ["git_pr_listar", "git_pr_obter", "git_pipeline_status", "git_pipeline_aguardar"]) {
       expect(byName(n).annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false, openWorldHint: true });
     }
     for (const n of ["git_pr_criar", "git_pr_comentar"]) {
@@ -717,6 +721,307 @@ describe("git_pipeline_status", () => {
   });
 });
 
+describe("git_pipeline_aguardar", () => {
+  const PATH = "/2.0/repositories/ws/r/pipelines/";
+  const pipeline = (uuid: string, state: "RUNNING" | "OK" | "FAIL", over: Record<string, unknown> = {}) => ({
+    uuid,
+    build_number: 41,
+    state: state === "RUNNING" ? { name: "IN_PROGRESS" } : { name: "COMPLETED", result: { name: state === "OK" ? "SUCCESSFUL" : "FAILED" } },
+    target: { ref_name: "feature/x", commit: { hash: "abc123abc123" } },
+    created_on: "2026-10-05T10:00:00Z",
+    ...over,
+  });
+  const steps = (c: Call) =>
+    c.url.pathname.endsWith("/steps/")
+      ? reply(200, { values: [{ name: "Build", state: { name: "COMPLETED", result: { name: "SUCCESSFUL" } } }, { name: "Test", state: { name: "COMPLETED", result: { name: "FAILED" } } }] })
+      : undefined;
+
+  /** A clock the fake sleep advances: no real waiting. */
+  function fakeClock(start = Date.parse("2026-10-05T10:05:00Z")) {
+    const clock = { t: start, sleeps: [] as number[] };
+    const extraDeps: Partial<GitToolDeps> = {
+      now: () => clock.t,
+      sleep: (ms: number) => {
+        clock.sleeps.push(ms);
+        clock.t += ms;
+        return Promise.resolve();
+      },
+    };
+    return { clock, extraDeps };
+  }
+
+  it("polls until the pipeline finishes, then reports the state, the duration and the failed steps", async () => {
+    const { clock, extraDeps } = fakeClock();
+    let list = 0;
+    const env = makeEnv({
+      remote: BB_REMOTE,
+      extraDeps,
+      handler: routed(steps, (c) => {
+        if (c.url.pathname !== PATH) return undefined;
+        list += 1;
+        return reply(200, { values: [pipeline("{u1}", list < 3 ? "RUNNING" : "FAIL")] });
+      }),
+    });
+    const res = await callTool(env.tools, "git_pipeline_aguardar", { repo: env.repo, branch: "feature/x", intervalo_segundos: 10 });
+    expect(res.isError).toBeUndefined();
+    const data = dataOf(res);
+    expect(data).toMatchObject({ ok: true, terminou: true, motivo: "terminou", estado: "falha", provedor: "bitbucket", consultas: 3, espera_segundos: 20, duracao_segundos: 320 });
+    expect(data.steps_com_falha).toEqual([{ nome: "Test", estado: "falha" }]);
+    expect(clock.sleeps).toEqual([10_000, 10_000]);
+    expect(textOf(res)).toContain("Pipeline terminou: falha em 320s");
+    expect(textOf(res)).toContain("Steps com problema: Test (falha)");
+  });
+
+  it("returns terminou=false when the time runs out and never sleeps past the timeout", async () => {
+    const { clock, extraDeps } = fakeClock();
+    const env = makeEnv({
+      remote: BB_REMOTE,
+      extraDeps,
+      handler: routed(steps, (c) => (c.url.pathname === PATH ? reply(200, { values: [pipeline("{u1}", "RUNNING")] }) : undefined)),
+    });
+    const res = await callTool(env.tools, "git_pipeline_aguardar", { repo: env.repo, branch: "feature/x", timeout_segundos: 25, intervalo_segundos: 10 });
+    expect(res.isError).toBeUndefined();
+    expect(dataOf(res)).toMatchObject({ ok: true, terminou: false, motivo: "timeout", estado: "executando", duracao_segundos: null });
+    expect(clock.sleeps).toEqual([10_000, 10_000, 5_000]);
+    expect(textOf(res)).toContain("chame git_pipeline_aguardar de novo");
+  });
+
+  it("waits while the pipeline does not exist yet, filtering by commit", async () => {
+    const { extraDeps } = fakeClock();
+    let list = 0;
+    const env = makeEnv({
+      remote: BB_REMOTE,
+      extraDeps,
+      handler: routed(steps, (c) => {
+        if (c.url.pathname !== PATH) return undefined;
+        list += 1;
+        return reply(200, { values: list < 2 ? [] : [pipeline("{u1}", "OK")] });
+      }),
+    });
+    const res = await callTool(env.tools, "git_pipeline_aguardar", { repo: env.repo, commit: "abc123" });
+    expect(dataOf(res)).toMatchObject({ terminou: true, estado: "sucesso", consultas: 2 });
+    const first = env.fake.calls.find((c) => new URL(c.req.url).pathname === PATH)!;
+    expect(new URL(first.req.url).searchParams.get("q")).toBe('target.commit.hash="abc123"');
+  });
+
+  it("reports sem_pipeline when none appears before the timeout", async () => {
+    const { extraDeps } = fakeClock();
+    const env = makeEnv({ remote: BB_REMOTE, extraDeps, handler: routed((c) => (c.url.pathname === PATH ? reply(200, { values: [] }) : undefined)) });
+    const res = await callTool(env.tools, "git_pipeline_aguardar", { repo: env.repo, branch: "feature/x", timeout_segundos: 20, intervalo_segundos: 10 });
+    expect(dataOf(res)).toMatchObject({ ok: true, terminou: false, motivo: "sem_pipeline", estado: null });
+    expect(textOf(res)).toContain("Nenhum pipeline apareceu");
+  });
+
+  it("picks a pipeline by its number", async () => {
+    const { extraDeps } = fakeClock();
+    const env = makeEnv({
+      remote: BB_REMOTE,
+      extraDeps,
+      handler: routed(steps, (c) =>
+        c.url.pathname === PATH ? reply(200, { values: [pipeline("{u2}", "RUNNING", { build_number: 42 }), pipeline("{u1}", "OK", { build_number: 41 })] }) : undefined,
+      ),
+    });
+    const res = await callTool(env.tools, "git_pipeline_aguardar", { repo: env.repo, pipeline: 41 });
+    expect(dataOf(res)).toMatchObject({ terminou: true, estado: "sucesso", id: "{u1}" });
+  });
+
+  it("waits on GitHub Actions too, and the jobs are read only at the end", async () => {
+    const { extraDeps } = fakeClock();
+    let runs = 0;
+    const run = (status: string, conclusion: string | null) => ({ id: 501, status, conclusion, head_branch: "feature/x", head_sha: "d".repeat(40), html_url: "https://github.com/o/r/actions/runs/501", created_at: "2026-10-05T10:00:00Z" });
+    const env = makeEnv({
+      remote: GH_REMOTE,
+      extraDeps,
+      handler: routed(
+        (c) => {
+          if (c.url.pathname !== "/repos/o/r/actions/runs") return undefined;
+          runs += 1;
+          return reply(200, { workflow_runs: [runs < 2 ? run("in_progress", null) : run("completed", "success")] });
+        },
+        on("GET", "/repos/o/r/actions/runs/501/jobs", reply(200, { jobs: [{ name: "build", status: "completed", conclusion: "success" }] })),
+      ),
+    });
+    const res = await callTool(env.tools, "git_pipeline_aguardar", { repo: env.repo, branch: "feature/x" });
+    expect(dataOf(res)).toMatchObject({ terminou: true, estado: "sucesso", provedor: "github", steps: [{ nome: "build", estado: "sucesso" }] });
+    expect(requests(env.fake).filter((r) => r.endsWith("/jobs"))).toHaveLength(1);
+  });
+
+  it("tolerates a hiccup of the provider while waiting, but not a lasting failure", async () => {
+    const { extraDeps } = fakeClock();
+    let list = 0;
+    const flaky = makeEnv({
+      remote: BB_REMOTE,
+      extraDeps,
+      handler: routed(steps, (c) => {
+        if (c.url.pathname !== PATH) return undefined;
+        list += 1;
+        return list === 1 ? reply(502, {}) : reply(200, { values: [pipeline("{u1}", "OK")] });
+      }),
+    });
+    expect(dataOf(await callTool(flaky.tools, "git_pipeline_aguardar", { repo: flaky.repo, branch: "feature/x" }))).toMatchObject({ terminou: true, estado: "sucesso", consultas: 2 });
+
+    const broken = makeEnv({ remote: BB_REMOTE, extraDeps, handler: routed((c) => (c.url.pathname === PATH ? reply(401, {}) : undefined)) });
+    const res = await callTool(broken.tools, "git_pipeline_aguardar", { repo: broken.repo, branch: "feature/x" });
+    expect(res.isError).toBe(true);
+    expect(dataOf(res).codigo).toBe("provedor_http_401");
+  });
+
+  it("stops waiting when the call is cancelled", async () => {
+    const ac = new AbortController();
+    const extraDeps: Partial<GitToolDeps> = {
+      now: () => 0,
+      sleep: () => {
+        ac.abort();
+        return Promise.resolve();
+      },
+    };
+    const env = makeEnv({
+      remote: BB_REMOTE,
+      extraDeps,
+      handler: routed(steps, (c) => (c.url.pathname === PATH ? reply(200, { values: [pipeline("{u1}", "RUNNING")] }) : undefined)),
+    });
+    const tool = env.tools.find((t) => t.name === "git_pipeline_aguardar")!;
+    const res = await tool.handler({ repo: env.repo, branch: "feature/x" }, { client: { id: "t", name: "T" }, moduleId: "ai-git-tools", signal: ac.signal });
+    expect(dataOf(res)).toMatchObject({ terminou: false, motivo: "cancelado" });
+  });
+
+  type Finished = Parameters<NonNullable<GitToolDeps["onPipelineFinished"]>>[0];
+
+  it("calls onPipelineFinished once when the pipeline finishes", async () => {
+    const { extraDeps } = fakeClock();
+    const finished: Finished[] = [];
+    const env = makeEnv({
+      remote: BB_REMOTE,
+      extraDeps: { ...extraDeps, onPipelineFinished: (info) => void finished.push(info) },
+      handler: routed(steps, (c) => (c.url.pathname === PATH ? reply(200, { values: [pipeline("{u1}", "OK")] }) : undefined)),
+    });
+    const res = await callTool(env.tools, "git_pipeline_aguardar", { repo: env.repo, branch: "feature/x" });
+    expect(dataOf(res)).toMatchObject({ terminou: true, estado: "sucesso" });
+    expect(finished).toHaveLength(1);
+    expect(finished[0]).toMatchObject({ repo: env.repo, provedor: "bitbucket", estado: "sucesso", branch: "feature/x", duracaoSegundos: 300 });
+    expect(typeof finished[0]!.url).toBe("string");
+    expect(typeof finished[0]!.commit).toBe("string");
+  });
+
+  it("does not call onPipelineFinished on timeout or when no pipeline appears", async () => {
+    const { extraDeps } = fakeClock();
+    const finished: Finished[] = [];
+    const deps: Partial<GitToolDeps> = { ...extraDeps, onPipelineFinished: (info) => void finished.push(info) };
+    const running = makeEnv({
+      remote: BB_REMOTE,
+      extraDeps: deps,
+      handler: routed(steps, (c) => (c.url.pathname === PATH ? reply(200, { values: [pipeline("{u1}", "RUNNING")] }) : undefined)),
+    });
+    expect(dataOf(await callTool(running.tools, "git_pipeline_aguardar", { repo: running.repo, branch: "feature/x", timeout_segundos: 20, intervalo_segundos: 10 }))).toMatchObject({ motivo: "timeout" });
+    const none = makeEnv({ remote: BB_REMOTE, extraDeps: deps, handler: routed((c) => (c.url.pathname === PATH ? reply(200, { values: [] }) : undefined)) });
+    expect(dataOf(await callTool(none.tools, "git_pipeline_aguardar", { repo: none.repo, branch: "feature/x", timeout_segundos: 20, intervalo_segundos: 10 }))).toMatchObject({ motivo: "sem_pipeline" });
+    expect(finished).toHaveLength(0);
+  });
+
+  it("answers normally when the onPipelineFinished callback throws", async () => {
+    const { extraDeps } = fakeClock();
+    let calls = 0;
+    const env = makeEnv({
+      remote: BB_REMOTE,
+      extraDeps: {
+        ...extraDeps,
+        onPipelineFinished: () => {
+          calls += 1;
+          throw new Error("falha do aviso");
+        },
+      },
+      handler: routed(steps, (c) => (c.url.pathname === PATH ? reply(200, { values: [pipeline("{u1}", "FAIL")] }) : undefined)),
+    });
+    const res = await callTool(env.tools, "git_pipeline_aguardar", { repo: env.repo, branch: "feature/x" });
+    expect(calls).toBe(1);
+    expect(res.isError).toBeUndefined();
+    expect(dataOf(res)).toMatchObject({ ok: true, terminou: true, motivo: "terminou", estado: "falha" });
+  });
+
+  it("validates the time limits, has no Telegram option and is read-only", async () => {
+    const env = makeEnv({ remote: BB_REMOTE });
+    expect(dataOf(await callTool(env.tools, "git_pipeline_aguardar", { repo: env.repo, timeout_segundos: 1801 })).codigo).toBe("argumento_invalido");
+    expect(dataOf(await callTool(env.tools, "git_pipeline_aguardar", { repo: env.repo, intervalo_segundos: 0 })).codigo).toBe("argumento_invalido");
+    const tg = await callTool(env.tools, "git_pipeline_aguardar", { repo: env.repo, avisar_telegram: true });
+    expect(dataOf(tg).codigo).toBe("argumento_invalido");
+    expect(textOf(tg)).toContain("Argumentos aceitos");
+    expect(env.fake.calls).toHaveLength(0);
+    const t = env.tools.find((x) => x.name === "git_pipeline_aguardar")!;
+    expect(t).toMatchObject({ categoria: "git/pr", efeito: "leitura", annotations: { readOnlyHint: true } });
+  });
+});
+
+describe("synonyms and defaults of the provider tools", () => {
+  it("git_pr_obter: max_bytes_diff absent or 0 uses the default 200000 (and the diff is cut there)", async () => {
+    const big = "diff --git a/x b/x\n" + "+".repeat(300_000) + "\n";
+    for (const extra of [{}, { max_bytes_diff: 0 }]) {
+      const env = makeEnv({
+        remote: BB_REMOTE,
+        handler: routed(
+          on("GET", "/2.0/repositories/ws/r/pullrequests/12", reply(200, prBody())),
+          on("GET", "/2.0/repositories/ws/r/pullrequests/12/diff", reply(200, big)),
+        ),
+      });
+      const res = await callTool(env.tools, "git_pr_obter", { repo: env.repo, numero: 12, incluir: ["diff"], ...extra });
+      expect(res.isError).toBeUndefined();
+      expect(dataOf(res)).toMatchObject({ diff_truncado: true });
+      expect((dataOf(res).diff as string).length).toBe(200_000);
+    }
+  });
+
+  it("git_pr_obter: an explicit max_bytes_diff still cuts there", async () => {
+    const env = makeEnv({
+      remote: BB_REMOTE,
+      handler: routed(
+        on("GET", "/2.0/repositories/ws/r/pullrequests/12", reply(200, prBody())),
+        on("GET", "/2.0/repositories/ws/r/pullrequests/12/diff", reply(200, "0123456789".repeat(10))),
+      ),
+    });
+    const res = await callTool(env.tools, "git_pr_obter", { repo: env.repo, numero: 12, incluir: ["diff"], max_bytes_diff: 30 });
+    expect((dataOf(res).diff as string).length).toBe(30);
+  });
+
+  it.each(["merge_commit", "merge-commit", "Merge Commit"])("git_pr_merge: estrategia %s is a merge commit", async (estrategia) => {
+    const env = makeEnv({
+      remote: BB_REMOTE,
+      handler: routed(
+        on("GET", "/2.0/repositories/ws/r/pullrequests/12", reply(200, prBody())),
+        on("POST", "/2.0/repositories/ws/r/pullrequests/12/merge", reply(200, prBody({ state: "MERGED", merge_commit: { hash: "mmm9999999" } }))),
+      ),
+    });
+    const res = await callTool(env.tools, "git_pr_merge", { repo: env.repo, numero: 12, destino: "develop", titulo: "Minha feature", estrategia });
+    expect(res.isError).toBeUndefined();
+    expect(dataOf(res)).toMatchObject({ ok: true, mesclado: true });
+    expect((env.fake.calls[1]!.req.body as Record<string, unknown>).merge_strategy).toBe("merge_commit");
+  });
+
+  it("git_pr_merge: merge_commit still goes through the check of the approved PR", async () => {
+    const env = makeEnv({
+      remote: BB_REMOTE,
+      handler: routed(on("GET", "/2.0/repositories/ws/r/pullrequests/12", reply(200, prBody()))),
+    });
+    const res = await callTool(env.tools, "git_pr_merge", { repo: env.repo, numero: 12, destino: "main", titulo: "Minha feature", estrategia: "merge_commit" });
+    expect(dataOf(res).codigo).toBe("aprovacao_divergente");
+    expect(writes(env.fake)).toEqual([]);
+  });
+
+  it("git_pr_merge: an unknown estrategia lists the valid ones", async () => {
+    const env = makeEnv({ remote: BB_REMOTE });
+    const res = await callTool(env.tools, "git_pr_merge", { repo: env.repo, numero: 12, destino: "develop", titulo: "t", estrategia: "rebase" });
+    expect(dataOf(res).codigo).toBe("argumento_invalido");
+    expect(textOf(res)).toContain("use merge, squash ou fast_forward");
+  });
+
+  it("synonyms of arguments work in the provider tools (projeto -> repo, pr -> numero)", async () => {
+    const env = makeEnv({
+      remote: BB_REMOTE,
+      handler: routed(on("GET", "/2.0/repositories/ws/r/pullrequests/12", reply(200, prBody()))),
+    });
+    const res = await callTool(env.tools, "git_pr_obter", { projeto: env.repo, pr: 12 });
+    expect(dataOf(res)).toMatchObject({ ok: true, numero: 12 });
+  });
+});
+
 describe("operations outside the list", () => {
   it("a 404 or 405 on Bitbucket carries the hint of search_vault_tools", async () => {
     const env = makeEnv({
@@ -751,11 +1056,19 @@ describe("operations outside the list", () => {
 });
 
 describe("repository resolution", () => {
-  it("refuses a repository outside the allowed folders before any call", async () => {
+  it("refuses a repository outside the allowed folders before any call (write tools)", async () => {
     const env = makeEnv({ remote: BB_REMOTE });
     const outside = makeRepo(makeTempDir(), "fora");
-    const res = await callTool(env.tools, "git_pr_listar", { repo: outside });
+    const res = await callTool(env.tools, "git_pr_comentar", { repo: outside, numero: 1, texto: "oi" });
     expect(dataOf(res).codigo).toBe("repo_nao_permitido");
     expect(env.fake.calls).toHaveLength(0);
+  });
+
+  it("a read tool accepts any git repository, even outside the allowed folders", async () => {
+    const env = makeEnv({ remote: BB_REMOTE, handler: routed(on("GET", "/2.0/repositories/ws/r/pullrequests", reply(200, { values: [] }))) });
+    const outside = makeRepo(makeTempDir(), "fora");
+    sh(outside, "remote", "add", "origin", BB_REMOTE);
+    const res = await callTool(env.tools, "git_pr_listar", { repo: outside });
+    expect(res.isError).not.toBe(true);
   });
 });

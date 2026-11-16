@@ -47,6 +47,7 @@ describe("tool index metadata", () => {
     "git_pr_comentar",
     "git_pr_merge",
     "git_pipeline_status",
+    "git_pipeline_aguardar",
     // git/repo
     "git_repo_criar",
     "git_release_criar",
@@ -55,9 +56,9 @@ describe("tool index metadata", () => {
     "git_registrar_evento",
   ];
 
-  it("covers all 28 tools with metadata", () => {
+  it("covers all 29 tools with metadata", () => {
     expect(Object.keys(GIT_TOOL_METADATA).sort()).toEqual([...expectedTools].sort());
-    expect(expectedTools).toHaveLength(28);
+    expect(expectedTools).toHaveLength(29);
   });
 
   it("classifies categories and effects correctly", () => {
@@ -126,7 +127,7 @@ describe("tool index metadata", () => {
 
   it("decorates all tools returned by buildGitTools", () => {
     const tools = buildGitTools(fakeDeps);
-    expect(tools).toHaveLength(28);
+    expect(tools).toHaveLength(29);
     for (const tool of tools) {
       expect(tool.categoria).toBeDefined();
       expect(tool.efeito).toBeDefined();

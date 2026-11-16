@@ -36,6 +36,7 @@ import { resolveRepo } from "../core/repo-resolver";
 import type { RemoteCache, ResolvedRepo } from "../core/repo-resolver";
 import type { HubTool, HubToolResult } from "../ecosystem/types";
 import type { Settings } from "../types";
+import { normalizeArgs } from "./arg-aliases";
 import { withToolMetadata } from "./metadata";
 import { buildHistoryTools } from "./history-tools";
 import { buildProviderTools } from "./provider-tools";
@@ -89,6 +90,20 @@ export interface GitToolDeps {
   tracker?: ProjectLookup;
   /** Reads the remote (PRs and deploys) for git_sync with `remoto`. Without it that option only warns. */
   remoteSync?: Pick<RemoteSync, "syncProject">;
+  /** Pause used by git_pipeline_aguardar between two polls (aborted with the call). Only tests set it. */
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  /** Clock of git_pipeline_aguardar. Only tests set it. */
+  now?: () => number;
+  /** Chamado quando git_pipeline_aguardar termina (motivo terminou). O plugin do Obsidian não usa; a entrada app avisa no Telegram pelo barramento do AI Ecosystem 2.0. */
+  onPipelineFinished?: (info: {
+    repo: string;
+    provedor: string;
+    estado: string;
+    branch: string;
+    commit: string;
+    url: string;
+    duracaoSegundos: number | null;
+  }) => void;
   /** Short-lived cache of the git remote of each repository; the plugin sets it, the tests leave it out. */
   remoteCache?: RemoteCache;
 }
@@ -131,13 +146,6 @@ export function optStringList(args: Args, key: string): string[] | undefined {
   return v as string[];
 }
 
-/** Refuses arguments that the schema does not declare (the schema has additionalProperties: false). */
-export function assertKnownArgs(args: Args, schema: JsonSchema): void {
-  const known = Object.keys((schema.properties as Record<string, unknown> | undefined) ?? {});
-  const extra = Object.keys(args).filter((k) => !known.includes(k));
-  if (extra.length > 0) throw new GuardError(`Argumento desconhecido: ${extra.join(", ")}.`);
-}
-
 // ---------------------------------------------------------------------------
 // Tool definition
 // ---------------------------------------------------------------------------
@@ -168,6 +176,8 @@ export interface RepoToolContext {
   deps: GitToolDeps;
   git: GitRunner;
   repo: ResolvedRepo;
+  /** Aborted when the client cancels the call (only long tools look at it). */
+  signal?: AbortSignal;
 }
 
 export interface RepoToolSpec extends ToolMeta {
@@ -182,17 +192,19 @@ export function defineRepoTool(deps: GitToolDeps, spec: RepoToolSpec): HubTool {
     description: spec.description,
     inputSchema: spec.inputSchema,
     annotations: spec.annotations,
-    handler: async (args) => {
+    handler: async (rawArgs, hubCtx) => {
       try {
-        assertKnownArgs(args, spec.inputSchema);
+        const args = normalizeArgs(rawArgs, spec.inputSchema);
         const repo = await resolveRepo(reqString(args, "repo"), {
           git: deps.git,
           projects: deps.projects,
           allowedFolders: deps.allowedFolders,
           allowAnyFolder: deps.allowAnyFolder,
+          // Reading is allowed in any git repository; only the tools that write keep the folder rules.
+          readOnly: spec.annotations.readOnlyHint === true,
           remoteCache: deps.remoteCache,
         });
-        const result = await spec.run({ deps, git: deps.git, repo }, args);
+        const result = await spec.run({ deps, git: deps.git, repo, ...(hubCtx?.signal ? { signal: hubCtx.signal } : {}) }, args);
         return await documented(deps, spec.name, repo, result);
       } catch (err) {
         return fromError(err, deps.redact);
@@ -242,10 +254,9 @@ export function defineFreeTool(deps: GitToolDeps, spec: FreeToolSpec): HubTool {
     description: spec.description,
     inputSchema: spec.inputSchema,
     annotations: spec.annotations,
-    handler: async (args) => {
+    handler: async (rawArgs) => {
       try {
-        assertKnownArgs(args, spec.inputSchema);
-        return await spec.run({ deps, git: deps.git }, args);
+        return await spec.run({ deps, git: deps.git }, normalizeArgs(rawArgs, spec.inputSchema));
       } catch (err) {
         return fromError(err, deps.redact);
       }
@@ -306,6 +317,19 @@ function remoteInfoAnswer(info: RemoteInfoResult): { lines: string[]; data: Reco
       secret_configurada: info.secretConfigurada,
     },
   };
+}
+
+/**
+ * The target of git_diff. Missing: refs when base or head came, otherwise worktree (like a bare
+ * `git diff`). Synonyms: stage, staged, cached, index = the stage; unstaged, working, worktree, ... = the working tree.
+ */
+export function diffTarget(raw: string | undefined, hasRefs: boolean): "worktree" | "staged" | "refs" {
+  if (raw === undefined) return hasRefs ? "refs" : "worktree";
+  const key = raw.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  if (["worktree", "unstaged", "working", "working_tree", "workdir", "work_tree", "wt", "arvore", "local", "nao_staged", "fora_do_stage"].includes(key)) return "worktree";
+  if (["staged", "stage", "cached", "index", "indice", "no_stage"].includes(key)) return "staged";
+  if (["refs", "ref", "commits", "range", "intervalo", "branches"].includes(key)) return "refs";
+  throw new GuardError(`alvo inválido: ${raw} (use worktree, staged ou refs; também valem unstaged/working, stage/cached/index).`);
 }
 
 // ---------------------------------------------------------------------------
@@ -377,22 +401,23 @@ export function buildReadTools(deps: GitToolDeps): HubTool[] {
       name: "git_diff",
       title: "Diferenças",
       description:
-        "Mostra as diferenças da árvore de trabalho (worktree), do stage (staged) ou entre duas referências (refs). Não inclui arquivos ainda não rastreados. O texto é cortado em max_bytes (padrão 40000) e marcado como truncado, e o que ficou de fora vem listado em omitidos; as linhas de índice do git são removidas. Só lê.",
+        "Mostra as diferenças da árvore de trabalho (worktree), do stage (staged) ou entre duas referências (refs). Sem alvo: refs se vier base ou head, senão worktree (como um git diff puro). Aceita sinônimos: unstaged e working valem worktree; stage, cached e index valem staged; caminho e path valem caminhos. max_bytes 0 usa o padrão. Não inclui arquivos ainda não rastreados. O texto é cortado em max_bytes (padrão 40000) e marcado como truncado, e o que ficou de fora vem listado em omitidos; as linhas de índice do git são removidas. Só lê.",
       inputSchema: GIT_DIFF_SCHEMA,
       annotations: READ_ONLY,
       async run({ git, repo }, args) {
-        const alvo = reqString(args, "alvo");
-        if (alvo !== "worktree" && alvo !== "staged" && alvo !== "refs") {
-          throw new GuardError(`alvo inválido: ${alvo} (use worktree, staged ou refs).`);
-        }
+        const base = optString(args, "base");
+        const head = optString(args, "head");
+        const alvo = diffTarget(optString(args, "alvo"), base !== undefined || head !== undefined);
+        // 0 (or less) means "the default", like leaving it out.
+        const maxBytes = optInt(args, "max_bytes");
         const res = await gitDiff(git, repo.root, {
           alvo,
-          base: optString(args, "base"),
-          head: optString(args, "head"),
+          base,
+          head,
           caminhos: optStringList(args, "caminhos"),
           stat: optBool(args, "stat"),
           contexto: optInt(args, "contexto"),
-          maxBytes: optInt(args, "max_bytes"),
+          maxBytes: maxBytes !== undefined && maxBytes <= 0 ? undefined : maxBytes,
         });
         const where = res.alvo === "refs" ? `${res.base ?? ""}..${res.head ?? ""}` : res.alvo;
         const summary = res.vazio

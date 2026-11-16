@@ -5,6 +5,7 @@ import { realpath as fsRealpath } from "node:fs";
 import { isAbsolute } from "node:path";
 import { GuardError } from "./guards";
 import { maskCredentials } from "./git-runner";
+import { matchProject, suggestionText } from "./project-match";
 import { parseRemoteUrl } from "./providers/provider";
 import type { RemoteRef } from "./providers/provider";
 import type { GitRunner, ProjectLookup } from "./ports";
@@ -41,6 +42,11 @@ export interface RepoResolverDeps {
   allowedFolders: () => string[];
   /** When true, any folder is accepted; git still has to confirm it is a repository. */
   allowAnyFolder?: () => boolean;
+  /**
+   * Read-only tools: any folder is accepted, as with allowAnyFolder, but git still has to confirm it
+   * is a repository. Write tools never set it, so their folder restrictions stay.
+   */
+  readOnly?: boolean;
   /** Real path of an existing path; defaults to the native `realpath`. Rejects when missing. */
   realpath?: (path: string) => Promise<string>;
   /** Short-lived cache of the remote of each repository. */
@@ -106,13 +112,13 @@ export async function resolveRepo(input: string, deps: RepoResolverDeps): Promis
 
   let candidate: string;
   let projectName: string | undefined;
-  if (looksLikePath(text)) {
+  if (!/^\[\[.*\]\]$/.test(text) && looksLikePath(text)) {
     if (!isAbsolute(text)) throw new RepoError(`O caminho tem de ser absoluto: ${text}`);
     if (text.split(/[\\/]/).some((seg) => seg === "..")) throw new RepoError(`O caminho não pode conter "..": ${text}`);
     candidate = text;
   } else {
-    const project = all.find((p) => p.name.toLowerCase() === text.toLowerCase());
-    if (!project) throw new RepoError(`Projeto não encontrado: ${text}`);
+    const { project, sugestoes } = matchProject(all, text);
+    if (!project) throw new RepoError(`Projeto não encontrado: ${text}.${suggestionText(sugestoes)}`);
     if (!project.clonePath) throw new RepoError(`O projeto ${project.name} não tem clone local na nota.`);
     projectName = project.name;
     candidate = project.clonePath;
@@ -157,7 +163,7 @@ export async function resolveRepo(input: string, deps: RepoResolverDeps): Promis
     if (r !== undefined) roots.push(r);
   }
 
-  const anyFolder = deps.allowAnyFolder?.() ?? false;
+  const anyFolder = (deps.allowAnyFolder?.() ?? false) || deps.readOnly === true;
   if (!anyFolder && !roots.some((r) => isInside(r.path, realCandidate))) {
     throw new RepoError(`O caminho está fora dos projetos e das pastas permitidas: ${candidate}`);
   }

@@ -37,14 +37,14 @@ const names = (list: { name: string }[]): string[] => list.map((t) => t.name);
 const eventNotes = (v: MemoryVault): string[] => [...v.notes.keys()].filter((p) => p.includes("/Eventos/") && !p.endsWith("Eventos.md"));
 
 describe("registry", () => {
-  it("has 28 tools with the history deps and 24 without them", () => {
+  it("has 29 tools with the history deps and 25 without them", () => {
     const repo = makeRepo();
     const s = setup([{ name: "App", clone: repo }]);
     const all = buildGitTools(s.deps);
-    expect(all).toHaveLength(28);
+    expect(all).toHaveLength(29);
     expect(names(all).slice(-4)).toEqual(["git_graph", "git_changelog", "git_sync", "git_registrar_evento"]);
-    expect(new Set(names(all)).size).toBe(28);
-    expect(buildGitTools(makeDeps({ projects: [{ name: "App", clone: repo }] }))).toHaveLength(24);
+    expect(new Set(names(all)).size).toBe(29);
+    expect(buildGitTools(makeDeps({ projects: [{ name: "App", clone: repo }] }))).toHaveLength(25);
   });
 
   it("annotates the tools as the contract says", () => {
@@ -72,6 +72,24 @@ describe("errors shared by the documentation tools", () => {
     expect(dataOf(r)).toMatchObject({ ok: false, codigo: "argumento_invalido" });
     expect(textOf(r)).toContain('Projeto "Outro" não encontrado');
     expect(textOf(r)).toContain("App");
+  });
+
+  it("resolves the project by prefix, with [[ ]] and without case or accent differences", async () => {
+    const repo = makeRepo();
+    const s = setup([{ name: "Timesheet Reports App", clone: repo }]);
+    for (const nome of ["Timesheet Reports", "[[timesheet reports app]]", "TIMESHEET REPORTS APP"]) {
+      const r = await s.call("git_registrar_evento", { projeto: nome, tipo: "pr", titulo: `via ${nome}` });
+      expect(r.isError).not.toBe(true);
+      expect(dataOf(r)).toMatchObject({ ok: true, projeto: "Timesheet Reports App" });
+    }
+  });
+
+  it("an unknown project suggests the closest name", async () => {
+    const repo = makeRepo();
+    const s = setup([{ name: "Timesheet Reports App", clone: repo }]);
+    const r = await s.call("git_graph", { projeto: "Timesheet Repots" });
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toContain("Quis dizer: Timesheet Reports App?");
   });
 
   it("a path is not a project name", async () => {

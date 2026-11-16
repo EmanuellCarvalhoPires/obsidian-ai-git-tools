@@ -38,6 +38,7 @@ const VIEW_TYPE = "ai-git-tools-view";
 export const GIT_INSTRUCTIONS =
   "AI Git Tools runs git and reads GitHub or Bitbucket pull requests and pipelines for you. " +
   "Use its tools instead of running git or the provider APIs from the shell, so every repository action is recorded in the project history." +
+  " To wait for a pipeline use git_pipeline_aguardar once, not git_pipeline_status in a loop." +
   " For provider operations that are not tools here (for example editing or reopening a pull request): on Bitbucket use search_vault_tools + run_vault_tool; on GitHub use http_request with Authorization {{bearer:NOME}} on api.github.com.";
 
 export default class AiGitToolsPlugin extends Plugin implements SettingsHost {

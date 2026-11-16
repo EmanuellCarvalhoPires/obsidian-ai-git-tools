@@ -75,7 +75,7 @@ describe("AI Git Tools connection to the AI Ecosystem", () => {
     expect(core.registrations).toHaveLength(1);
     const registration = core.registrations[0]!;
     expect(registration).toMatchObject({ id: MODULE_ID, name: "AI Git Tools", version: "0.1.0", apiVersion: 1 });
-    expect(registration.tools?.map((t) => t.name)).toEqual(["git_status", "git_diff", "git_log", "git_blame", "git_branches", "git_fetch", "git_checkout", "git_add", "git_commit", "git_push", "git_pull", "git_merge", "git_revert", "git_stash", "git_tag", "git_clone", "git_pr_criar", "git_pr_listar", "git_pr_obter", "git_pr_comentar", "git_pr_merge", "git_pipeline_status", "git_repo_criar", "git_release_criar", "git_graph", "git_changelog", "git_sync", "git_registrar_evento"]);
+    expect(registration.tools?.map((t) => t.name)).toEqual(["git_status", "git_diff", "git_log", "git_blame", "git_branches", "git_fetch", "git_checkout", "git_add", "git_commit", "git_push", "git_pull", "git_merge", "git_revert", "git_stash", "git_tag", "git_clone", "git_pr_criar", "git_pr_listar", "git_pr_obter", "git_pr_comentar", "git_pr_merge", "git_pipeline_status", "git_pipeline_aguardar", "git_repo_criar", "git_release_criar", "git_graph", "git_changelog", "git_sync", "git_registrar_evento"]);
   });
 
   it("registers the guided setup handler when the hooks service exists", async () => {

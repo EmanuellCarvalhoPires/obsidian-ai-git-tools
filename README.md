@@ -18,6 +18,12 @@ npm run build
 
 `npm run deploy` copies `main.js`, `manifest.json` and `styles.css` to the folder in `.deploy-target` (or to the `AIGT_DEPLOY_DIR` variable).
 
+## App entry (AI Ecosystem 2.0)
+
+- `npm run build:app` generates `dist-app/ai-git-tools.cjs`, which the AI Ecosystem 2.0 app runs with Node.
+- The automations only run in the app with the module in service (`servico`); turn the plugin off in Obsidian at that point.
+- The pipeline notice goes through the app's Telegram bus (the Telegram module must also be in `servico`).
+
 ## License
 
 MIT, see [LICENSE](LICENSE).

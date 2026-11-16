@@ -41,6 +41,7 @@ import type { Args, GitToolDeps, RepoToolContext, ToolAnnotations } from "./git-
 import { fail, ok } from "./results";
 import type { Dica, ErrorCode } from "./results";
 import {
+  GIT_PIPELINE_AGUARDAR_SCHEMA,
   GIT_PIPELINE_STATUS_SCHEMA,
   GIT_PR_COMENTAR_SCHEMA,
   GIT_PR_CRIAR_SCHEMA,
@@ -61,7 +62,31 @@ const MAX_PR_LIMIT = 100;
 const DEFAULT_PIPELINE_LIMIT = 5;
 const MAX_PIPELINE_LIMIT = 20;
 
-const DICA_PUSH = "Envie a branch antes com git_push (definir_upstream=true) e chame git_pr_criar de novo.";
+const DEFAULT_WAIT_TIMEOUT_S = 600;
+const MAX_WAIT_TIMEOUT_S = 1800;
+const DEFAULT_WAIT_INTERVAL_S = 15;
+const MAX_WAIT_INTERVAL_S = 120;
+/** Consecutive provider errors tolerated while waiting. */
+const MAX_WAIT_FAILURES = 3;
+const PIPELINE_FINAL: ReadonlyArray<PipelineInfo["estado"]> = ["sucesso", "falha", "parado"];
+
+function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted === true) {
+      resolve();
+      return;
+    }
+    const timer = window.setTimeout(done, ms);
+    function done(): void {
+      window.clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    }
+    signal?.addEventListener("abort", done, { once: true });
+  });
+}
+
+const DICA_PUSH ="Envie a branch antes com git_push (definir_upstream=true) e chame git_pr_criar de novo.";
 
 // ---------------------------------------------------------------------------
 // Provider selection
@@ -230,7 +255,26 @@ function reqNumero(args: Args): number {
 }
 
 const ESTADOS: ReadonlyArray<PrEstado | "todos"> = ["aberto", "mesclado", "fechado", "todos"];
-const ESTRATEGIAS: ReadonlyArray<EstrategiaMerge> = ["merge", "squash", "fast_forward"];
+const ESTRATEGIA_SINONIMOS: Record<string, EstrategiaMerge> = {
+  merge: "merge",
+  merge_commit: "merge",
+  mergecommit: "merge",
+  squash: "squash",
+  squash_merge: "squash",
+  fast_forward: "fast_forward",
+  fastforward: "fast_forward",
+  ff: "fast_forward",
+};
+
+/** merge_commit (the Bitbucket API name), merge-commit, Merge Commit... all mean merge. */
+export function parseEstrategia(raw: string): EstrategiaMerge {
+  const found = ESTRATEGIA_SINONIMOS[raw.trim().toLowerCase().replace(/[\s-]+/g, "_")];
+  if (found === undefined) throw new GuardError(`estrategia inválida: ${raw} (use merge, squash ou fast_forward; merge_commit também vale como merge).`);
+  return found;
+}
+
+const DEFAULT_PR_DIFF_BYTES = 200_000;
+const MAX_PR_DIFF_BYTES = 5_000_000;
 const INCLUIR: ReadonlyArray<PrIncluir> = ["commits", "diff", "comentarios"];
 
 function prData(pr: PrInfo, resumido = false): Record<string, unknown> {
@@ -390,7 +434,7 @@ export function buildProviderTools(deps: GitToolDeps): HubTool[] {
       name: "git_pr_obter",
       title: "Ver um pull request",
       description:
-        "Mostra um pull request (título, estado, origem, destino, autor, URL, descrição) e, com incluir, os commits, o diff (cortado em max_bytes_diff, padrão 200000) e os comentários. Só lê. Precisa de uma secret do provedor configurada.",
+        "Mostra um pull request (título, estado, origem, destino, autor, URL, descrição) e, com incluir, os commits, o diff (cortado em max_bytes_diff, padrão 200000; ausente ou 0 usa o padrão) e os comentários. Só lê. Precisa de uma secret do provedor configurada.",
       inputSchema: GIT_PR_OBTER_SCHEMA,
       annotations: READ_REMOTE,
       async run(ctx, args) {
@@ -401,10 +445,11 @@ export function buildProviderTools(deps: GitToolDeps): HubTool[] {
           if (!INCLUIR.includes(item as PrIncluir)) throw new GuardError(`incluir inválido: ${item} (use commits, diff ou comentarios).`);
           if (!incluir.includes(item as PrIncluir)) incluir.push(item as PrIncluir);
         }
-        const maxBytes = optInt(args, "max_bytes_diff");
-        if (maxBytes !== undefined && maxBytes < 1) throw new GuardError('"max_bytes_diff" tem de ser maior que zero.');
+        // Missing, 0 or negative: the default. Above the hard limit: the limit.
+        const asked = optInt(args, "max_bytes_diff");
+        const maxBytes = asked === undefined || asked <= 0 ? DEFAULT_PR_DIFF_BYTES : Math.min(asked, MAX_PR_DIFF_BYTES);
         return withProvider(ctx, async (use) => {
-          const pr: PrDetalhe = await use.provider.obterPr({ numero, incluir, ...(maxBytes !== undefined ? { max_bytes_diff: maxBytes } : {}) });
+          const pr: PrDetalhe = await use.provider.obterPr({ numero, incluir, max_bytes_diff: maxBytes });
           const linhas = [prLine(pr)];
           if (pr.descricao !== undefined && pr.descricao.trim() !== "") linhas.push("", pr.descricao.trim());
           if (pr.commits) {
@@ -459,15 +504,14 @@ export function buildProviderTools(deps: GitToolDeps): HubTool[] {
       name: "git_pr_merge",
       title: "Mesclar pull request",
       description:
-        "Mescla um pull request aberto. Não há hook de aprovação: o merge roda assim que a tool é chamada. Antes de chamar, pergunte ao usuário no chat ('Posso fazer o merge do PR #N para a branch XYZ?') e só chame depois de um sim explícito àquele PR. Informe numero, destino e titulo exatamente como estão no PR: a tool lê o PR, exige que esteja aberto e compara destino e titulo com os reais; se divergirem, recusa com aprovacao_divergente e nada é mesclado. A branch de origem nunca é apagada. estrategia: merge, squash ou fast_forward (só no Bitbucket). No Bitbucket o merge pode ser assíncrono: a tool espera até 30 s e, se ainda não terminou, avisa com merge_em_andamento. Precisa de uma secret do provedor configurada.",
+        "Mescla um pull request aberto. Não há hook de aprovação: o merge roda assim que a tool é chamada. Antes de chamar, pergunte ao usuário no chat ('Posso fazer o merge do PR #N para a branch XYZ?') e só chame depois de um sim explícito àquele PR. Informe numero, destino e titulo exatamente como estão no PR: a tool lê o PR, exige que esteja aberto e compara destino e titulo com os reais; se divergirem, recusa com aprovacao_divergente e nada é mesclado. A branch de origem nunca é apagada. estrategia: merge (também merge_commit ou merge-commit), squash ou fast_forward (só no Bitbucket). No Bitbucket o merge pode ser assíncrono: a tool espera até 30 s e, se ainda não terminou, avisa com merge_em_andamento. Precisa de uma secret do provedor configurada.",
       inputSchema: GIT_PR_MERGE_SCHEMA,
       annotations: MERGE_ANNOTATIONS,
       async run(ctx, args) {
         const numero = reqNumero(args);
         const destino = reqString(args, "destino").trim();
         const titulo = reqString(args, "titulo").trim();
-        const estrategia = reqString(args, "estrategia") as EstrategiaMerge;
-        if (!ESTRATEGIAS.includes(estrategia)) throw new GuardError(`estrategia inválida: ${estrategia} (use merge, squash ou fast_forward).`);
+        const estrategia = parseEstrategia(reqString(args, "estrategia"));
         const mensagem = optString(args, "mensagem");
         return withProvider(ctx, async (use) => {
           const pr = await use.provider.obterPr({ numero });
@@ -539,6 +583,129 @@ export function buildProviderTools(deps: GitToolDeps): HubTool[] {
             pipelines: res.itens.map(pipelineData),
             total: res.itens.length,
             truncado: res.truncado,
+          });
+        });
+      },
+    }),
+
+    defineRepoTool(deps, {
+      name: "git_pipeline_aguardar",
+      title: "Aguardar o pipeline terminar",
+      description:
+        "Fica consultando o pipeline (Bitbucket Pipelines ou GitHub Actions) por dentro e só responde quando ele termina (sucesso, falha ou parado) ou quando o tempo estoura, em vez de o agente repetir git_pipeline_status. Escolha o pipeline por branch, commit, numero_pr ou pipeline (número/id); sem nada usa a branch atual. Logo depois de um push, informe o commit para não pegar um pipeline antigo da branch; enquanto o pipeline ainda não existe, a tool espera. timeout_segundos: padrão 600, máximo 1800; intervalo_segundos: padrão 15 (1 a 120). Devolve o estado final, a duração (da criação até a conclusão detectada) e os steps que falharam; se o tempo estourar devolve terminou=false com o estado atual e basta chamar de novo. O log dos steps não é lido. Só lê. Precisa de uma secret do provedor configurada.",
+      inputSchema: GIT_PIPELINE_AGUARDAR_SCHEMA,
+      annotations: READ_REMOTE,
+      async run(ctx, args) {
+        const timeoutS = intInRange(args, "timeout_segundos", DEFAULT_WAIT_TIMEOUT_S, 1, MAX_WAIT_TIMEOUT_S);
+        const intervaloS = intInRange(args, "intervalo_segundos", DEFAULT_WAIT_INTERVAL_S, 1, MAX_WAIT_INTERVAL_S);
+        const commit = optString(args, "commit");
+        const numeroPr = optInt(args, "numero_pr");
+        if (numeroPr !== undefined && numeroPr < 1) throw new GuardError('"numero_pr" tem de ser maior que zero.');
+        const pipelineRaw = args.pipeline;
+        if (pipelineRaw !== undefined && pipelineRaw !== null && typeof pipelineRaw !== "string" && typeof pipelineRaw !== "number") {
+          throw new GuardError('"pipeline" tem de ser o número ou o id do pipeline.');
+        }
+        const pipelineText = pipelineRaw === undefined || pipelineRaw === null ? "" : String(pipelineRaw).trim().replace(/^#/, "");
+        const pipelineId = pipelineText === "" ? undefined : pipelineText;
+        let branch = optString(args, "branch");
+        if (branch === undefined && commit === undefined && numeroPr === undefined && pipelineId === undefined) {
+          branch = await currentBranch(ctx.git, ctx.repo.root);
+          if (branch === undefined) throw new GuardError("O repositório está com o HEAD solto: informe branch, commit, numero_pr ou pipeline.");
+        }
+        const filtros = {
+          // A pipeline number is looked for among the latest runs of the repository.
+          limite: pipelineId !== undefined ? MAX_PIPELINE_LIMIT : 5,
+          ...(branch !== undefined ? { branch } : {}),
+          ...(commit !== undefined ? { commit } : {}),
+          ...(numeroPr !== undefined ? { numero_pr: numeroPr } : {}),
+        };
+        const pick = (itens: PipelineInfo[]): PipelineInfo | undefined =>
+          pipelineId === undefined ? itens[0] : itens.find((p) => p.id === pipelineId || p.url.replace(/\/+$/, "").endsWith(`/${pipelineId}`));
+        const wasAborted = (): boolean => ctx.signal?.aborted === true;
+        const sleep = ctx.deps.sleep ?? defaultSleep;
+        const now = ctx.deps.now ?? Date.now;
+
+        return withProvider(ctx, async (use) => {
+          const inicio = now();
+          const limite = inicio + timeoutS * 1000;
+          let consultas = 0;
+          let falhasSeguidas = 0;
+          let atual: PipelineInfo | undefined;
+          let cancelado = false;
+          for (;;) {
+            try {
+              consultas += 1;
+              const res = await use.provider.statusPipelines({ ...filtros, incluirSteps: false });
+              atual = pick(res.itens);
+              falhasSeguidas = 0;
+            } catch (err) {
+              // A hiccup of the provider while waiting is not the end of the wait; a lasting one is.
+              falhasSeguidas += 1;
+              if (!(err instanceof RemoteError) || falhasSeguidas > MAX_WAIT_FAILURES) throw err;
+            }
+            if (atual !== undefined && PIPELINE_FINAL.includes(atual.estado)) break;
+            if (wasAborted()) {
+              cancelado = true;
+              break;
+            }
+            const restante = limite - now();
+            if (restante <= 0) break;
+            await sleep(Math.min(intervaloS * 1000, restante), ctx.signal);
+            if (wasAborted()) {
+              cancelado = true;
+              break;
+            }
+          }
+          // Steps are read once, for the pipeline that was chosen.
+          if (atual !== undefined) {
+            const completo = await use.provider.statusPipelines({ ...filtros, incluirSteps: true });
+            atual = pick(completo.itens) ?? atual;
+          }
+          const fim = now();
+          const terminou = atual !== undefined && PIPELINE_FINAL.includes(atual.estado);
+          const esperaS = Math.round((fim - inicio) / 1000);
+          const criado = atual !== undefined ? Date.parse(atual.criadoEm) : Number.NaN;
+          const duracaoS = terminou && Number.isFinite(criado) ? Math.max(0, Math.round((fim - criado) / 1000)) : null;
+          const falhos = atual !== undefined ? atual.steps.filter((st) => st.estado === "falha" || st.estado === "parado") : [];
+          const motivo = cancelado ? "cancelado" : terminou ? "terminou" : atual === undefined ? "sem_pipeline" : "timeout";
+          let texto: string;
+          if (atual === undefined) {
+            texto = `Nenhum pipeline apareceu em ${esperaS}s (${consultas} consulta(s)). Confira se o push chegou ao remoto ou chame de novo.`;
+          } else {
+            texto = [
+              terminou
+                ? `Pipeline terminou: ${atual.estado}${duracaoS !== null ? ` em ${duracaoS}s` : ""}.`
+                : `O pipeline ainda não terminou (${atual.estado}) depois de ${esperaS}s${cancelado ? " (chamada cancelada)" : ""}: chame git_pipeline_aguardar de novo.`,
+              ...pipelineLines(atual),
+              ...(falhos.length > 0 ? [`Steps com problema: ${falhos.map((st) => `${st.nome} (${st.estado})`).join(", ")}.`] : []),
+            ].join("\n");
+          }
+          if (motivo === "terminou" && atual !== undefined) {
+            try {
+              ctx.deps.onPipelineFinished?.({
+                repo: ctx.repo.root,
+                provedor: use.ref.provider,
+                estado: atual.estado,
+                branch: atual.branch,
+                commit: atual.commit,
+                url: atual.url,
+                duracaoSegundos: duracaoS,
+              });
+            } catch {
+              // O aviso é opcional: um erro dele não pode atrapalhar a resposta da tool.
+            }
+          }
+          return ok(texto, {
+            repo: ctx.repo.root,
+            provedor: use.ref.provider,
+            terminou,
+            motivo,
+            estado: atual?.estado ?? null,
+            ...(atual !== undefined ? pipelineData(atual) : {}),
+            duracao_segundos: duracaoS,
+            espera_segundos: esperaS,
+            consultas,
+            steps_com_falha: falhos.map((st) => ({ nome: st.nome, estado: st.estado })),
           });
         });
       },

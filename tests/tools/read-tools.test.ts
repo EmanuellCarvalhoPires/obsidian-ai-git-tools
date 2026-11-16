@@ -34,19 +34,26 @@ describe("registro", () => {
     }
   });
 
-  it("alvo do git_diff é um enum e as obrigatórias estão declaradas", () => {
+  it("alvo do git_diff é opcional (sem enum, aceita sinônimos) e as obrigatórias estão declaradas", () => {
     const diff = tools.find((t) => t.name === "git_diff");
     const props = diff?.inputSchema.properties as Record<string, { enum?: string[] }>;
-    expect(props.alvo?.enum).toEqual(["worktree", "staged", "refs"]);
-    expect(diff?.inputSchema.required).toEqual(["repo", "alvo"]);
+    expect(props.alvo?.enum).toBeUndefined();
+    expect(diff?.inputSchema.required).toEqual(["repo"]);
     expect(tools.find((t) => t.name === "git_blame")?.inputSchema.required).toEqual(["repo", "caminho"]);
   });
 });
 
 describe("erros comuns a todas as tools", () => {
-  it.each(READ_TOOLS)("%s: repositório fora da lista -> repo_nao_permitido", async (name) => {
+  it.each(READ_TOOLS)("%s: repositório git fora da lista é lido (tools de leitura aceitam qualquer repositório git)", async (name) => {
     const args: Record<string, unknown> = { repo: fora };
     if (name === "git_diff") args.alvo = "worktree";
+    if (name === "git_blame") args.caminho = "README.md";
+    const res = await callTool(tools, name, args);
+    expect(res.isError).not.toBe(true);
+  });
+
+  it.each(READ_TOOLS)("%s: pasta que não é repositório git continua recusada", async (name) => {
+    const args: Record<string, unknown> = { repo: makeTempDir() };
     if (name === "git_blame") args.caminho = "README.md";
     const res = await callTool(tools, name, args);
     expect(res.isError).toBe(true);

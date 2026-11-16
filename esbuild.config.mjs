@@ -6,6 +6,23 @@ import { builtinModules } from "node:module";
 
 const prod = process.argv[2] === "production";
 
+// Entrada "app": processo filho do app AI Ecosystem 2.0 (Node puro, sem "obsidian").
+if (process.argv[2] === "app") {
+  const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+  await esbuild.build({
+    entryPoints: ["src/app/main.ts"],
+    bundle: true,
+    platform: "node",
+    format: "cjs",
+    target: "node22",
+    outfile: "dist-app/ai-git-tools.cjs",
+    external: [...builtinModules, ...builtinModules.map((m) => `node:${m}`)],
+    define: { __PLUGIN_VERSION__: JSON.stringify(pkg.version) },
+    logLevel: "info",
+  });
+  process.exit(0);
+}
+
 // styles.css is built from src/styles/*.css (one file per area), in name order. It stays in git.
 function buildStyles() {
   const dir = "src/styles";

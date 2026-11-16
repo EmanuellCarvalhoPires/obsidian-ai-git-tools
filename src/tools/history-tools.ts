@@ -24,9 +24,11 @@ import { branchId, commitId, DEV_EVENT_TYPES, isDevEventType, prId } from "../co
 import type { DevEvent } from "../core/history/events";
 import type { RemoteSyncResult } from "../core/history/remote-sync";
 import type { ProjectInfo } from "../core/ports";
+import { matchProject, suggestionText } from "../core/project-match";
 import { readRemote } from "../core/repo-resolver";
 import type { HubTool, HubToolResult } from "../ecosystem/types";
-import { assertKnownArgs, optBool, optInt, optString, reqString } from "./git-tools";
+import { normalizeArgs } from "./arg-aliases";
+import { optBool, optInt, optString, reqString } from "./git-tools";
 import type { Args, GitToolDeps, ToolAnnotations } from "./git-tools";
 import { fail, fromError, ok } from "./results";
 import { GIT_CHANGELOG_SCHEMA, GIT_GRAPH_SCHEMA, GIT_REGISTRAR_EVENTO_SCHEMA, GIT_SYNC_SCHEMA } from "./schemas";
@@ -46,9 +48,12 @@ const projectNames = (list: ProjectInfo[]): string => (list.length > 0 ? list.ma
 /** The project of `name`, with a clone that is a git repository. Throws GuardError (argumento_invalido) otherwise. */
 async function resolveProject(deps: HistoryDeps, name: string): Promise<ProjectInfo> {
   const lookup = deps.tracker ?? deps.projects;
-  const project = await lookup.byName(name);
+  const all = await lookup.list();
+  const { project, sugestoes } = matchProject(all, name);
   if (!project) {
-    throw new GuardError(`Projeto "${name}" não encontrado. Projetos com a tag dev/projeto: ${projectNames(await lookup.list())}. Use o nome do projeto, não um caminho.`);
+    throw new GuardError(
+      `Projeto "${name}" não encontrado.${suggestionText(sugestoes)} Projetos com a tag dev/projeto: ${projectNames(all)}. Use o nome do projeto, não um caminho.`,
+    );
   }
   if (!project.clonePath) {
     throw new GuardError(`O projeto "${project.name}" não tem clone local: a nota do projeto precisa da linha "Clone local" com a pasta do repositório.`);
@@ -75,10 +80,9 @@ function defineHistoryTool(deps: HistoryDeps, spec: ProjectToolSpec): HubTool {
     description: spec.description,
     inputSchema: spec.inputSchema,
     annotations: spec.annotations,
-    handler: async (args) => {
+    handler: async (rawArgs) => {
       try {
-        assertKnownArgs(args, spec.inputSchema);
-        return await spec.run(deps, args);
+        return await spec.run(deps, normalizeArgs(rawArgs, spec.inputSchema));
       } catch (err) {
         return fromError(err, deps.redact);
       }

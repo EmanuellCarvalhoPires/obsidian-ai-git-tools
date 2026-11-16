@@ -13,7 +13,8 @@ export function objectSchema(properties: Record<string, JsonSchema>, required: s
 /** `repo` argument shared by every git tool that works on a repository. */
 export const REPO_PROP: JsonSchema = {
   type: "string",
-  description: "Nome do projeto (nota com a tag dev/projeto e clone local) ou caminho absoluto de um repositório dentro dos projetos ou das pastas permitidas.",
+  description:
+    "Nome do projeto (nota com a tag dev/projeto e clone local; vale com ou sem [[ ]], sem diferenciar maiúsculas e acentos, ou pelo começo do nome se for único) ou caminho absoluto de um repositório git. Tools que só leem aceitam qualquer pasta que seja um repositório git; as que escrevem exigem que ele esteja dentro dos projetos ou das pastas permitidas.",
 };
 
 const str = (description: string): JsonSchema => ({ type: "string", description });
@@ -41,19 +42,17 @@ export const GIT_STATUS_SCHEMA = objectSchema(
 export const GIT_DIFF_SCHEMA = objectSchema(
   {
     repo: REPO_PROP,
-    alvo: {
-      type: "string",
-      enum: ["worktree", "staged", "refs"],
-      description: "O que comparar: worktree (alterações ainda fora do stage), staged (o que está no stage) ou refs (entre duas referências; exige base).",
-    },
+    alvo: str(
+      "O que comparar: worktree (alterações ainda fora do stage; também unstaged ou working), staged (o que está no stage; também stage, cached ou index) ou refs (entre duas referências; exige base). Sem alvo: refs se vier base ou head, senão worktree.",
+    ),
     base: str("Referência de partida (branch, tag, hash, HEAD~1). Obrigatória com alvo=refs."),
     head: str("Referência de chegada. Padrão HEAD. Só vale com alvo=refs."),
     caminhos: { type: "array", items: { type: "string" }, description: "Limita o diff a estes caminhos relativos ao repositório." },
     stat: bool("Mostra só o resumo por arquivo (--stat), sem o conteúdo das linhas."),
     contexto: int("Linhas de contexto ao redor de cada trecho (-U). Padrão do git: 3.", 0, 1000),
-    max_bytes: int("Tamanho máximo do diff devolvido, em bytes (padrão 40000). Acima disso o texto é cortado e truncado=true.", 1, 5_000_000),
+    max_bytes: int("Tamanho máximo do diff devolvido, em bytes (padrão 40000; 0 usa o padrão). Acima disso o texto é cortado e truncado=true.", 0, 5_000_000),
   },
-  ["repo", "alvo"],
+  ["repo"],
 );
 
 export const GIT_LOG_SCHEMA = objectSchema(
@@ -264,7 +263,10 @@ export const GIT_PR_OBTER_SCHEMA = objectSchema(
       items: { type: "string", enum: ["commits", "diff", "comentarios"] },
       description: "O que trazer além dos dados do PR: commits, diff (cortado em max_bytes_diff) e comentarios.",
     },
-    max_bytes_diff: int("Tamanho máximo do diff devolvido, em bytes (padrão 200000). Acima disso o texto é cortado e diff_truncado=true.", 1, 5_000_000),
+    max_bytes_diff: int(
+      "Tamanho máximo do diff devolvido, em bytes (padrão 200000; ausente ou 0 usa o padrão; acima de 5000000 vale 5000000). Acima do limite o texto é cortado e diff_truncado=true.",
+      0,
+    ),
   },
   ["repo", "numero"],
 );
@@ -286,8 +288,8 @@ export const GIT_PR_MERGE_SCHEMA = objectSchema(
     titulo: str("Título do PR, exatamente como está no PR. A tool confere com o PR real e recusa (aprovacao_divergente) se for diferente."),
     estrategia: {
       type: "string",
-      enum: ["merge", "squash", "fast_forward"],
-      description: "merge cria um commit de merge; squash junta os commits em um; fast_forward só existe no Bitbucket.",
+      description:
+        "merge cria um commit de merge (também vale merge_commit ou merge-commit, o nome da API do Bitbucket); squash junta os commits em um; fast_forward (ou fast-forward) só existe no Bitbucket.",
     },
     mensagem: str("Mensagem (corpo) do commit de merge."),
   },
@@ -301,6 +303,19 @@ export const GIT_PIPELINE_STATUS_SCHEMA = objectSchema(
     commit: str("Hash (inteiro ou abreviado) do commit dos pipelines."),
     numero_pr: int("Pipelines da branch de origem deste PR.", 1),
     limite: { type: "integer", minimum: 1, maximum: 20, default: 5, description: "Número máximo de pipelines (padrão 5, máximo 20)." },
+  },
+  ["repo"],
+);
+
+export const GIT_PIPELINE_AGUARDAR_SCHEMA = objectSchema(
+  {
+    repo: REPO_PROP,
+    branch: str("Branch do pipeline. Sem branch, commit, numero_pr nem pipeline, usa a branch atual do repositório."),
+    commit: str("Hash (inteiro ou abreviado) do commit do pipeline. Prefira-o logo depois de um push: assim a tool não confunde o pipeline novo com um antigo da mesma branch."),
+    numero_pr: int("Pipeline da branch de origem deste PR.", 1),
+    pipeline: { type: ["string", "integer"], description: "Número (Bitbucket) ou id da execução (GitHub) do pipeline, como aparece na URL ou em git_pipeline_status." },
+    timeout_segundos: int("Quanto esperar, em segundos (padrão 600, máximo 1800). Estourado o tempo, a tool responde com o estado atual e terminou=false.", 1),
+    intervalo_segundos: int("Intervalo entre as consultas ao provedor, em segundos (padrão 15, de 1 a 120).", 1),
   },
   ["repo"],
 );

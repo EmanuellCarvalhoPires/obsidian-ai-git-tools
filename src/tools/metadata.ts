@@ -213,6 +213,14 @@ export const GIT_TOOL_METADATA: Record<string, HubToolMetadata> = {
     exposicao: "indice",
     exemplo: { repo: "meu-projeto", limite: 5 },
   },
+  git_pipeline_aguardar: {
+    categoria: "git/pr",
+    tags: ["git", "pipeline", "ci", "aguardar", "esperar", "wait", "github", "bitbucket", "rede"],
+    resumo: "Espera o pipeline terminar e devolve o estado final e os steps que falharam",
+    efeito: "leitura",
+    exposicao: "indice",
+    exemplo: { repo: "meu-projeto", commit: "a1b2c3d", timeout_segundos: 600 },
+  },
 
   // ---------------------------------------------------------------------------
   // git/repo (criar, release_criar)

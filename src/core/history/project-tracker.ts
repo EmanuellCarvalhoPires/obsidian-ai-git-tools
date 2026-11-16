@@ -3,6 +3,7 @@
 // the `clone_local` property). The tracker is the ProjectLookup that the repository resolver and
 // the history layer use.
 import type { ProjectInfo, ProjectLookup, VaultPort } from "../ports";
+import { matchProject } from "../project-match";
 import { isInside } from "../repo-resolver";
 import type { Settings } from "../../types";
 
@@ -54,10 +55,9 @@ export class ProjectTracker implements ProjectLookup {
     });
   }
 
-  /** Case-insensitive match by project name. */
+  /** Match by project name: no case, accent or [[ ]] differences, or a unique prefix. */
   async byName(name: string): Promise<ProjectInfo | undefined> {
-    const key = name.trim().toLowerCase();
-    return (await this.list()).find((p) => p.name.toLowerCase() === key);
+    return matchProject(await this.list(), name).project;
   }
 
   /** Project whose clone contains the absolute path (the path may be inside a subfolder of the clone). */
